@@ -1,14 +1,3 @@
-// ==============================
-// LifeViz - app.js (TIMELINE ONLY, SERIOUS CLEAN LAYOUT)
-// What’s fixed (based on your screenshot + sketch):
-// ✅ Month-span bubbles are ANCHORED at the earliest expected month (left edge fixed)
-// ✅ If month-span bubbles overlap, they STACK into rows (no horizontal shoving)
-// ✅ Card connectors originate from the bubble’s anchor (not seg midline) → no spaghetti
-// ✅ Cards never overlap: adaptive lane spacing if the lane can’t fit full min distance
-// ✅ Expand/Collapse REMOVED entirely (no button, no click toggle, no expanded state)
-// ✅ Keeps your NO-TEXT-LEAK clipPath wrapping + improved bullet wrapping
-// ==============================
-
 // =========================
 // Global state
 // =========================
@@ -292,7 +281,17 @@ function getBulletValue(stage, prefixesLower) {
 }
 
 function getStageRangeText(stage) {
-  return getBulletValue(stage, ["timing:", "seasonal timing:", "date range:", "range:"]);
+  const bullets = Array.isArray(stage.bullets) ? stage.bullets.map(b => String(b)) : [];
+
+  // First: strict prefixes
+  const strict = getBulletValue(stage, ["timing:", "seasonal timing:", "date range:", "range:"]);
+  if (strict) return strict;
+
+  // Fallback: detect month names anywhere
+  const monthRegex = /(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)/i;
+  const candidate = bullets.find(b => monthRegex.test(b));
+
+  return candidate || "";
 }
 
 function getStageDurationText(stage) {
@@ -539,642 +538,313 @@ function assignRowsFixedX(items, minGap, minX, maxX) {
   return { placed, rowCount: rows.length };
 }
 
-// =========================
-// RENDERER: Timeline
-// =========================
 function renderTimeline(data) {
   const stages = data.stages || [];
   const n = stages.length;
   if (!n) return;
 
-  const leftPad = 90;
-  const rightPad = 90;
+  const width = 1200;
+  const padding = 80;
+  const usableW = width - 2 * padding;
+  
+  const titleY = 50;
+  const monthBandY = 130;
+  let monthBandH = 80;
+  const cardSpacing = 280;
+  const cardW = 340;
 
-  const headerH = 26;
-  const cardW = 380;
-  const chipsRowH = 30;
-  const sourcesFooterH = 22;
+  // DEFINE MONTHS_SHORT AT TOP LEVEL (used throughout function)
+  const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-  const cardGap = 44;
-  const cardMinDistTarget = cardW + cardGap;
-
-  // Month-span bubbles
-  const spanBubbleH = 26;
-  const spanBubbleGap = 14;
-  const spanRowGap = 10;
-
-  const hasSubtitle = !!data.speciesName;
-  const TITLE_TOP = 12;
-  const TITLE_H = hasSubtitle ? 90 : 64;
-  const TITLE_BOTTOM = TITLE_TOP + TITLE_H;
-
-  const durationTexts = stages.map(s => getStageDurationText(s));
-  const days = durationTexts.map(t => durationToDays(t));
-  const weights = days.map(v => (typeof v === "number" && isFinite(v) && v > 0) ? v : 1);
-  const total = weights.reduce((a, b) => a + b, 0);
-
-  const topCount = Math.ceil(n / 2);
-  const minUsableForCards = (topCount <= 1) ? 0 : (topCount - 1) * cardMinDistTarget;
-
-  const minSegmentPx = 140;
-  const minUsableForSegments = n * minSegmentPx;
-
-  const baseWidth = 1500;
-  const extraWidth = Math.max(0, n - 6) * 300;
-
-  const usableW = Math.max(
-    (baseWidth + extraWidth) - leftPad - rightPad,
-    minUsableForCards,
-    minUsableForSegments
-  );
-
-  const width = usableW + leftPad + rightPad;
-
-  const svg = createSVG(width, 1200);
+  const svg = createSVG(width, 1200); // Start with larger height, adjust later
   const defs = ensureDefs(svg);
 
-  // shadow
-  const cardShadow = document.createElementNS(SVG_NS, "filter");
-  cardShadow.setAttribute("id", "cardShadowTimeline");
-  cardShadow.setAttribute("x", "-20%");
-  cardShadow.setAttribute("y", "-20%");
-  cardShadow.setAttribute("width", "140%");
-  cardShadow.setAttribute("height", "140%");
-  const feDrop = document.createElementNS(SVG_NS, "feDropShadow");
-  feDrop.setAttribute("dx", "0");
-  feDrop.setAttribute("dy", "2");
-  feDrop.setAttribute("stdDeviation", "2");
-  feDrop.setAttribute("flood-color", "#000000");
-  feDrop.setAttribute("flood-opacity", "0.14");
-  cardShadow.appendChild(feDrop);
-  defs.appendChild(cardShadow);
-
-  // Title
+  // ===== TITLE =====
   const title = document.createElementNS(SVG_NS, "text");
   title.setAttribute("x", width / 2);
-  title.setAttribute("y", 42);
+  title.setAttribute("y", titleY);
   title.setAttribute("text-anchor", "middle");
-  title.setAttribute("font-size", 22);
-  title.setAttribute("font-weight", "850");
-  title.setAttribute("fill", "#0f172a");
-  title.textContent = data.title || "Life history timeline";
+  title.setAttribute("font-size", 24);
+  title.setAttribute("font-weight", "bold");
+  title.setAttribute("fill", "#1a1a1a");
+  title.textContent = data.title || "Life History";
   svg.appendChild(title);
 
   if (data.speciesName) {
     const subtitle = document.createElementNS(SVG_NS, "text");
     subtitle.setAttribute("x", width / 2);
-    subtitle.setAttribute("y", 66);
+    subtitle.setAttribute("y", titleY + 25);
     subtitle.setAttribute("text-anchor", "middle");
-    subtitle.setAttribute("font-size", 13);
-    subtitle.setAttribute("fill", "#475569");
+    subtitle.setAttribute("font-size", 14);
+    subtitle.setAttribute("fill", "#666");
     subtitle.textContent = data.speciesName;
     svg.appendChild(subtitle);
   }
 
-  // Segments
-  const segments = [];
-  let cursor = leftPad;
-
-  for (let i = 0; i < n; i++) {
-    const segW = usableW * (weights[i] / total);
-    const durationLabel = getStageDurationText(stages[i]);
-    const rangeLabel = getStageRangeText(stages[i]);
-
-    let yearsLabel = "";
-    const d = durationToDays(durationLabel);
-    if (typeof d === "number" && isFinite(d) && d >= 365) {
-      const yrs = d / 365;
-      yearsLabel = `~${(yrs >= 10 ? Math.round(yrs) : Math.round(yrs * 10) / 10)} yrs`;
-    } else if ((durationLabel || "").toLowerCase().includes("year")) {
-      yearsLabel = "years";
-    }
-
-    segments.push({
-      i,
-      x: cursor,
-      w: segW,
-      cx: cursor + segW / 2,
-      durationLabel,
-      rangeLabel,
-      months: parseMonthRange(rangeLabel),
-      sources: getStageSources(stages[i]),
-      milestones: getStageMilestones(stages[i]),
-      chips: extractKeyFacts(stages[i]),
-      yearsLabel
-    });
-
-    cursor += segW;
-  }
-
-  // Card heights (based on wrapping)
-  const speciesKey = data.speciesName || "Species";
-  const bulletFont = 11.4;
-  const bulletLine = 14.5;
-  const bulletMaxW = (cardW - 24) - 6;
-
-  const cardHeights = segments.map(seg => {
-    const s = stages[seg.i];
-
-    const bullets = pickBullets(s.bullets || [], MAX_BULLETS).filter(b => {
-      const bl = String(b).toLowerCase();
-      if (bl.startsWith("sources:") || bl.startsWith("source:")) return false;
-      if (bl.startsWith("milestone:")) return false;
-      return true;
-    });
-
-    const bulletH = estimateBulletHeight({
-      svg,
-      maxWidthPx: bulletMaxW,
-      bullets,
-      fontSize: bulletFont,
-      lineHeight: bulletLine
-    });
-
-    const hasSources = seg.sources && seg.sources.length;
-    const paddingTop = 8 + chipsRowH;
-    const paddingBottom = 14;
-    const footer = hasSources ? (sourcesFooterH + 10) : 0;
-
-    const minCard = 190;
-    return Math.max(minCard, headerH + paddingTop + bulletH + paddingBottom + footer);
-  });
-
-  const topIdx = segments.map(seg => seg.i).filter(i => i % 2 === 0);
-  const botIdx = segments.map(seg => seg.i).filter(i => i % 2 === 1);
-
-  const topMaxH = topIdx.length ? Math.max(...topIdx.map(i => cardHeights[i])) : 220;
-  const botMaxH = botIdx.length ? Math.max(...botIdx.map(i => cardHeights[i])) : 220;
-
-  const topCardYBase = TITLE_BOTTOM + 26;
-  const midY = topCardYBase + topMaxH + 120;
-  const bottomCardYBase = midY + 150;
-
-  // Road background
-  const roadBg = document.createElementNS(SVG_NS, "rect");
-  roadBg.setAttribute("x", leftPad);
-  roadBg.setAttribute("y", midY - 12);
-  roadBg.setAttribute("width", usableW);
-  roadBg.setAttribute("height", 24);
-  roadBg.setAttribute("rx", 12);
-  roadBg.setAttribute("fill", "#e2e8f0");
-  roadBg.setAttribute("opacity", "0.85");
-  svg.appendChild(roadBg);
-
-  // Segments + labels
-  segments.forEach(seg => {
-    const color = heatColor(seg.i, n);
-
-    const segRect = document.createElementNS(SVG_NS, "rect");
-    segRect.setAttribute("x", seg.x);
-    segRect.setAttribute("y", midY - 12);
-    segRect.setAttribute("width", Math.max(10, seg.w));
-    segRect.setAttribute("height", 24);
-    segRect.setAttribute("rx", 12);
-    segRect.setAttribute("fill", color);
-    svg.appendChild(segRect);
-
-    if (seg.durationLabel && seg.w >= 140) {
-      const label = document.createElementNS(SVG_NS, "text");
-      label.setAttribute("x", seg.cx);
-      label.setAttribute("y", midY + 7);
-      label.setAttribute("text-anchor", "middle");
-      label.setAttribute("font-size", 12);
-      label.setAttribute("font-weight", 900);
-      label.setAttribute("fill", "#0b1220");
-      label.textContent = seg.durationLabel;
-      svg.appendChild(label);
-    }
-
-    if (seg.yearsLabel) {
-      const yl = document.createElementNS(SVG_NS, "text");
-      yl.setAttribute("x", seg.cx);
-      yl.setAttribute("y", midY - 18);
-      yl.setAttribute("text-anchor", "middle");
-      yl.setAttribute("font-size", 11);
-      yl.setAttribute("font-weight", 900);
-      yl.setAttribute("fill", "#0f172a");
-      yl.setAttribute("opacity", "0.9");
-      yl.textContent = seg.yearsLabel;
-      svg.appendChild(yl);
-    }
-  });
-
-  // Months band
-  const monthsY = midY + 32;
-  const monthBandH = 24;
-  const monthBand = document.createElementNS(SVG_NS, "g");
-
-  const bandBg = document.createElementNS(SVG_NS, "rect");
-  bandBg.setAttribute("x", leftPad);
-  bandBg.setAttribute("y", monthsY);
-  bandBg.setAttribute("width", usableW);
-  bandBg.setAttribute("height", monthBandH);
-  bandBg.setAttribute("rx", 10);
-  bandBg.setAttribute("fill", "#f8fafc");
-  bandBg.setAttribute("stroke", "#e2e8f0");
-  bandBg.setAttribute("stroke-width", 1);
-  monthBand.appendChild(bandBg);
+  // ===== MONTHS BAND WITH STAGE INDICATORS =====
+  const monthBandBg = document.createElementNS(SVG_NS, "rect");
+  monthBandBg.setAttribute("x", padding);
+  monthBandBg.setAttribute("y", monthBandY);
+  monthBandBg.setAttribute("width", usableW);
+  monthBandBg.setAttribute("height", monthBandH);
+  monthBandBg.setAttribute("rx", 8);
+  monthBandBg.setAttribute("fill", "#f5f5f5");
+  monthBandBg.setAttribute("stroke", "#ccc");
+  monthBandBg.setAttribute("stroke-width", 2);
+  svg.appendChild(monthBandBg);
 
   const monthW = usableW / 12;
-  for (let m = 0; m < 12; m++) {
-    const x = leftPad + m * monthW;
 
-    const tick = document.createElementNS(SVG_NS, "line");
-    tick.setAttribute("x1", x);
-    tick.setAttribute("x2", x);
-    tick.setAttribute("y1", monthsY);
-    tick.setAttribute("y2", monthsY + monthBandH);
-    tick.setAttribute("stroke", "#e2e8f0");
-    tick.setAttribute("stroke-width", 1);
-    monthBand.appendChild(tick);
+  // === Build stage month ranges for drawing spanning bars ===
+  const stageMonthRanges = [];
 
-    const lab = document.createElementNS(SVG_NS, "text");
-    lab.setAttribute("x", x + monthW / 2);
-    lab.setAttribute("y", monthsY + 16);
-    lab.setAttribute("text-anchor", "middle");
-    lab.setAttribute("font-size", 11);
-    lab.setAttribute("font-weight", 800);
-    lab.setAttribute("fill", "#334155");
-    lab.textContent = MONTHS[m].name;
-    monthBand.appendChild(lab);
-  }
+  stages.forEach((stage, i) => {
+    const rangeText = getStageRangeText(stage);
+    const monthRange = parseMonthRange(rangeText);
 
-  // subtle spans behind month band
-  segments.forEach(seg => {
-    if (!seg.months) return;
-    const { start, end, wraps } = seg.months;
-
-    const drawSpan = (s, e) => {
-      const x = leftPad + s * monthW;
-      const w = (e - s + 1) * monthW;
-
-      const span = document.createElementNS(SVG_NS, "rect");
-      span.setAttribute("x", x);
-      span.setAttribute("y", monthsY);
-      span.setAttribute("width", w);
-      span.setAttribute("height", monthBandH);
-      span.setAttribute("rx", 10);
-      span.setAttribute("fill", heatColor(seg.i, n));
-      span.setAttribute("opacity", "0.18");
-      monthBand.appendChild(span);
-    };
-
-    if (!wraps) drawSpan(start, end);
-    else { drawSpan(start, 11); drawSpan(0, end); }
-  });
-
-  svg.appendChild(monthBand);
-
-  // =========================
-  // Month-span bubbles (clean + serious)
-  // - anchored to earliest month
-  // - overlaps stack into rows (no moving)
-  // - record a PRIMARY anchor (earliest-start bubble) per stage for card connectors
-  // =========================
-  const spanMinX = leftPad;
-  const spanMaxX = leftPad + usableW;
-
-  const spanItemsTop = [];
-  const spanItemsBot = [];
-
-  // stagePrimarySpan.get(stageIndex) -> { itemId, startM, lane, cx, row }
-  const stagePrimarySpan = new Map();
-
-  const addSpanItem = (stageIndex, startM, endM, suffix) => {
-    const w = (endM - startM + 1) * monthW;
-    const desiredX = leftPad + startM * monthW;
-
-    const item = {
-      id: `${stageIndex}${suffix || ""}`,
-      stageIndex,
-      desiredX,
-      w,
-      startM,
-      endM,
-      suffix: suffix || ""
-    };
-
-    if (stageIndex % 2 === 0) spanItemsTop.push(item);
-    else spanItemsBot.push(item);
-
-    const existing = stagePrimarySpan.get(stageIndex);
-    if (!existing || startM < existing.startM) {
-      stagePrimarySpan.set(stageIndex, { itemId: item.id, startM });
-    }
-  };
-
-  segments.forEach(seg => {
-    if (!seg.months) return;
-    const { start, end, wraps } = seg.months;
-
-    if (!wraps) {
-      addSpanItem(seg.i, start, end, "");
-    } else {
-      // split across year boundary
-      addSpanItem(seg.i, start, 11, "_a"); // earliest part
-      addSpanItem(seg.i, 0, end, "_b");
-    }
-  });
-
-  const placedTop = spanItemsTop.length
-    ? assignRowsFixedX(spanItemsTop, spanBubbleGap, spanMinX, spanMaxX)
-    : { placed: [], rowCount: 0 };
-
-  const placedBot = spanItemsBot.length
-    ? assignRowsFixedX(spanItemsBot, spanBubbleGap, spanMinX, spanMaxX)
-    : { placed: [], rowCount: 0 };
-
-  const spanTopBaseY = monthsY - (spanBubbleH + 14);
-  const spanBotBaseY = monthsY + monthBandH + 18;
-
-  const drawSpanBubble = (placement, lane) => {
-    const item = placement.item;
-    const x = placement.x;
-    const row = placement.row;
-
-    const y = lane === "top"
-      ? (spanTopBaseY - row * (spanBubbleH + spanRowGap))
-      : (spanBotBaseY + row * (spanBubbleH + spanRowGap));
-
-    const color = heatColor(item.stageIndex, n);
-    const w = item.w;
-    const cx = x + w / 2;
-
-    const bandEdgeY = lane === "top" ? monthsY : (monthsY + monthBandH);
-
-    // connector from bubble center to month band edge (short + clean)
-    const tick = document.createElementNS(SVG_NS, "line");
-    tick.setAttribute("x1", cx);
-    tick.setAttribute("x2", cx);
-    tick.setAttribute("y1", lane === "top" ? (y + spanBubbleH) : y);
-    tick.setAttribute("y2", bandEdgeY);
-    tick.setAttribute("stroke", color);
-    tick.setAttribute("stroke-width", 2.2);
-    tick.setAttribute("opacity", "0.65");
-    svg.appendChild(tick);
-
-    const rect = document.createElementNS(SVG_NS, "rect");
-    rect.setAttribute("x", x);
-    rect.setAttribute("y", y);
-    rect.setAttribute("width", w);
-    rect.setAttribute("height", spanBubbleH);
-    rect.setAttribute("rx", 13);
-    rect.setAttribute("fill", "#ffffff");
-    rect.setAttribute("stroke", color);
-    rect.setAttribute("stroke-width", 2);
-    rect.setAttribute("filter", "url(#cardShadowTimeline)");
-    svg.appendChild(rect);
-
-    const stageTitle = safeText(stages[item.stageIndex]?.title || "");
-    const label = w < 110 ? shorten(stageTitle, 10) : (w < 160 ? shorten(stageTitle, 16) : shorten(stageTitle, 28));
-
-    const t = document.createElementNS(SVG_NS, "text");
-    t.setAttribute("x", cx);
-    t.setAttribute("y", y + 17);
-    t.setAttribute("text-anchor", "middle");
-    t.setAttribute("font-size", 11.2);
-    t.setAttribute("font-weight", 900);
-    t.setAttribute("fill", "#0f172a");
-    t.textContent = label;
-    svg.appendChild(t);
-
-    // record primary anchor for card connectors
-    const primary = stagePrimarySpan.get(item.stageIndex);
-    if (primary && primary.itemId === item.id) {
-      stagePrimarySpan.set(item.stageIndex, {
-        ...primary,
-        lane,
-        cx,
-        row
+    if (monthRange && monthRange.start !== null && monthRange.end !== null) {
+      const { start, end, wraps } = monthRange;
+      const color = heatColor(i, n);
+      const stageNum = i + 1;
+      
+      stageMonthRanges.push({ 
+        start, 
+        end, 
+        stageNum, 
+        title: stage.title || `Stage ${stageNum}`, 
+        color, 
+        wraps 
       });
     }
-  };
+  });
 
-  placedTop.placed.forEach(p => drawSpanBubble(p, "top"));
-  placedBot.placed.forEach(p => drawSpanBubble(p, "bottom"));
+  // === Draw colored bars for each stage across months ===
+  const barRowHeight = 20;
+  const barGapY = 4;
+  let nextBarY = monthBandY + 12;
 
-  // shift cards down/up if bubble stacks are deep so visuals don’t crash
-  const extraTopBubbleSpace = placedTop.rowCount > 1 ? (placedTop.rowCount - 1) * (spanBubbleH + spanRowGap) : 0;
-  const extraBotBubbleSpace = placedBot.rowCount > 1 ? (placedBot.rowCount - 1) * (spanBubbleH + spanRowGap) : 0;
+  stageMonthRanges.forEach((range) => {
+    const { start, end, stageNum, title, color, wraps } = range;
+    
+    const drawStageBar = (startM, endM) => {
+      const x1 = padding + startM * monthW;
+      const x2 = padding + (endM + 1) * monthW;
+      const barW = x2 - x1;
+      
+      const barRect = document.createElementNS(SVG_NS, "rect");
+      barRect.setAttribute("x", x1);
+      barRect.setAttribute("y", nextBarY);
+      barRect.setAttribute("width", barW);
+      barRect.setAttribute("height", barRowHeight);
+      barRect.setAttribute("rx", 4);
+      barRect.setAttribute("fill", color);
+      barRect.setAttribute("opacity", "0.85");
+      barRect.setAttribute("stroke", "#fff");
+      barRect.setAttribute("stroke-width", 2);
+      
+      // Add tooltip on hover
+      const tooltip = document.createElementNS(SVG_NS, "title");
+      const monthNames = MONTHS_SHORT.slice(startM, endM + 1).join(" - ");
+      tooltip.textContent = `Stage ${stageNum}: ${title}\nMonths: ${monthNames}`;
+      barRect.appendChild(tooltip);
+      
+      svg.appendChild(barRect);
+      
+      // Add stage number label centered in the bar
+      const label = document.createElementNS(SVG_NS, "text");
+      label.setAttribute("x", x1 + barW / 2);
+      label.setAttribute("y", nextBarY + barRowHeight / 2 + 6);
+      label.setAttribute("text-anchor", "middle");
+      label.setAttribute("font-size", "11");
+      label.setAttribute("font-weight", "bold");
+      label.setAttribute("fill", "#fff");
+      label.setAttribute("pointer-events", "none");
+      label.textContent = `${stageNum}`;
+      svg.appendChild(label);
 
-  const topCardY = topCardYBase + extraTopBubbleSpace;
-  const bottomCardY = bottomCardYBase + extraBotBubbleSpace;
+      // Add stage title if bar is wide enough
+      if (barW > 100) {
+        const titleLabel = document.createElementNS(SVG_NS, "text");
+        titleLabel.setAttribute("x", x1 + 10);
+        titleLabel.setAttribute("y", nextBarY + barRowHeight / 2 + 6);
+        titleLabel.setAttribute("font-size", "10");
+        titleLabel.setAttribute("fill", "#fff");
+        titleLabel.setAttribute("pointer-events", "none");
+        const truncated = title.length > 18 ? title.substring(0, 15) + "..." : title;
+        titleLabel.textContent = truncated;
+        svg.appendChild(titleLabel);
+      }
+    };
 
-  // =========================
-  // Cards (never overlap): adaptive lane spacing
-  // =========================
-  const minCardCx = leftPad + cardW / 2;
-  const maxCardCx = leftPad + usableW - cardW / 2;
-
-  const topSegs = segments.filter(seg => seg.i % 2 === 0).map(seg => ({ id: seg.i, desiredCx: seg.cx }));
-  const botSegs = segments.filter(seg => seg.i % 2 === 1).map(seg => ({ id: seg.i, desiredCx: seg.cx }));
-
-  function laneMinDist(count) {
-    if (count <= 1) return cardMinDistTarget;
-    const laneW = (maxCardCx - minCardCx);
-    const maxPossible = laneW / (count - 1);
-    return Math.min(cardMinDistTarget, Math.max(60, maxPossible));
-  }
-
-  const topCxMap = topSegs.length
-    ? distributeCenters(topSegs, laneMinDist(topSegs.length), minCardCx, maxCardCx)
-    : new Map();
-
-  const botCxMap = botSegs.length
-    ? distributeCenters(botSegs, laneMinDist(botSegs.length), minCardCx, maxCardCx)
-    : new Map();
-
-  // =========================
-  // Draw cards + connectors
-  // Connector starts at the PRIMARY bubble anchor for that stage (clean!)
-  // =========================
-  segments.forEach(seg => {
-    const s = stages[seg.i];
-    const isTop = seg.i % 2 === 0;
-    const color = heatColor(seg.i, n);
-
-    const cardCenterX = isTop ? (topCxMap.get(seg.i) ?? seg.cx) : (botCxMap.get(seg.i) ?? seg.cx);
-    const cardX = cardCenterX - cardW / 2;
-    const cardY = isTop ? topCardY : bottomCardY;
-    const cardH = cardHeights[seg.i];
-
-    // card connector anchor: bubble center (earliest month) → month band edge
-    const primary = stagePrimarySpan.get(seg.i);
-    let anchorX = seg.cx;
-    let anchorY = midY;
-
-    if (primary && typeof primary.cx === "number") {
-      anchorX = primary.cx;
-      anchorY = (primary.lane === "top") ? monthsY : (monthsY + monthBandH);
+    if (!wraps) {
+      drawStageBar(start, end);
+    } else {
+      // Split into two bars for wrapping ranges
+      drawStageBar(start, 11);
+      drawStageBar(0, end);
     }
 
-    const connector = document.createElementNS(SVG_NS, "path");
-    const endY = isTop ? (cardY + cardH) : cardY;
-    const dx = cardCenterX - anchorX;
+    nextBarY += barRowHeight + barGapY;
+  });
 
-    const c1x = anchorX + (dx * 0.30);
-    const c2x = cardCenterX - (dx * 0.20);
-    const c1y = isTop ? (anchorY - 26) : (anchorY + 26);
-    const c2y = isTop ? (endY + 34) : (endY - 34);
+  // Update month band height based on number of stages
+  const totalBarsHeight = stageMonthRanges.length * (barRowHeight + barGapY) + 12;
+  const finalMonthBandH = Math.max(monthBandH, totalBarsHeight + 20);
+  monthBandBg.setAttribute("height", finalMonthBandH);
 
-    connector.setAttribute(
-      "d",
-      `M ${anchorX} ${anchorY}
-       C ${c1x} ${c1y} ${c2x} ${c2y} ${cardCenterX} ${endY}`
-    );
-    connector.setAttribute("stroke", color);
-    connector.setAttribute("stroke-width", 3);
-    connector.setAttribute("fill", "none");
-    connector.setAttribute("opacity", "0.75");
-    connector.setAttribute("stroke-linecap", "round");
-    svg.appendChild(connector);
+  // Month divider lines and labels (at bottom)
+  for (let m = 0; m < 12; m++) {
+    const x = padding + m * monthW;
 
-    const cardG = document.createElementNS(SVG_NS, "g");
+    // Month divider line
+    const line = document.createElementNS(SVG_NS, "line");
+    line.setAttribute("x1", x);
+    line.setAttribute("x2", x);
+    line.setAttribute("y1", monthBandY);
+    line.setAttribute("y2", monthBandY + finalMonthBandH);
+    line.setAttribute("stroke", "#ddd");
+    line.setAttribute("stroke-width", 1);
+    svg.appendChild(line);
+
+    // Month label at bottom
+    const label = document.createElementNS(SVG_NS, "text");
+    label.setAttribute("x", x + monthW / 2);
+    label.setAttribute("y", monthBandY + finalMonthBandH - 6);
+    label.setAttribute("text-anchor", "middle");
+    label.setAttribute("font-size", "12");
+    label.setAttribute("font-weight", "bold");
+    label.setAttribute("fill", "#333");
+    label.textContent = MONTHS_SHORT[m];
+    svg.appendChild(label);
+  }
+
+  // ===== TIMELINE LINE & STAGE CARDS =====
+  const cardsStartY = monthBandY + finalMonthBandH + 40;
+  const timelineX = padding + 30;
+  const timelineLine = document.createElementNS(SVG_NS, "line");
+  timelineLine.setAttribute("x1", timelineX);
+  timelineLine.setAttribute("x2", timelineX);
+  timelineLine.setAttribute("y1", cardsStartY);
+  timelineLine.setAttribute("y2", cardsStartY + (n * cardSpacing));
+  timelineLine.setAttribute("stroke", "#ddd");
+  timelineLine.setAttribute("stroke-width", 3);
+  svg.appendChild(timelineLine);
+
+  // Draw each stage card
+  stages.forEach((stage, i) => {
+    const cardY = cardsStartY + i * cardSpacing;
+    const color = heatColor(i, n);
+
+    // Stage dot on timeline
+    const circle = document.createElementNS(SVG_NS, "circle");
+    circle.setAttribute("cx", timelineX);
+    circle.setAttribute("cy", cardY + 40);
+    circle.setAttribute("r", 12);
+    circle.setAttribute("fill", color);
+    circle.setAttribute("stroke", "#fff");
+    circle.setAttribute("stroke-width", 3);
+    svg.appendChild(circle);
+
+    const stageNum = document.createElementNS(SVG_NS, "text");
+    stageNum.setAttribute("x", timelineX);
+    stageNum.setAttribute("y", cardY + 45);
+    stageNum.setAttribute("text-anchor", "middle");
+    stageNum.setAttribute("font-size", 11);
+    stageNum.setAttribute("font-weight", "bold");
+    stageNum.setAttribute("fill", "#fff");
+    stageNum.textContent = i + 1;
+    svg.appendChild(stageNum);
+
+    // Card background
+    const cardX = padding + 80;
 
     const card = document.createElementNS(SVG_NS, "rect");
     card.setAttribute("x", cardX);
     card.setAttribute("y", cardY);
     card.setAttribute("width", cardW);
-    card.setAttribute("height", cardH);
-    card.setAttribute("rx", 14);
-    card.setAttribute("fill", "#ffffff");
-    card.setAttribute("stroke", "#e2e8f0");
+    card.setAttribute("height", 220);
+    card.setAttribute("rx", 8);
+    card.setAttribute("fill", "#fff");
+    card.setAttribute("stroke", "#ddd");
     card.setAttribute("stroke-width", 1);
-    card.setAttribute("filter", "url(#cardShadowTimeline)");
-    cardG.appendChild(card);
+    svg.appendChild(card);
 
+    // Card header
     const header = document.createElementNS(SVG_NS, "rect");
     header.setAttribute("x", cardX);
     header.setAttribute("y", cardY);
     header.setAttribute("width", cardW);
-    header.setAttribute("height", headerH);
-    header.setAttribute("rx", 14);
+    header.setAttribute("height", 40);
+    header.setAttribute("rx", 8);
     header.setAttribute("fill", color);
-    cardG.appendChild(header);
+    svg.appendChild(header);
 
-    const titleText = document.createElementNS(SVG_NS, "text");
-    titleText.setAttribute("x", cardX + 12);
-    titleText.setAttribute("y", cardY + 18);
-    titleText.setAttribute("font-size", 12.6);
-    titleText.setAttribute("font-weight", 900);
-    titleText.setAttribute("fill", "#ffffff");
-    titleText.textContent = `${seg.i + 1}. ${safeText(s.title)}`;
-    cardG.appendChild(titleText);
+    // Stage title
+    const cardTitle = document.createElementNS(SVG_NS, "text");
+    cardTitle.setAttribute("x", cardX + 12);
+    cardTitle.setAttribute("y", cardY + 25);
+    cardTitle.setAttribute("font-size", 15);
+    cardTitle.setAttribute("font-weight", "bold");
+    cardTitle.setAttribute("fill", "#fff");
+    cardTitle.textContent = stage.title || `Stage ${i + 1}`;
+    svg.appendChild(cardTitle);
 
-    // Chips
-    const chipsY = cardY + headerH + 8;
-    let chipX = cardX + 12;
-    const chipMaxX = cardX + cardW - 10;
+    // Duration info
+    const durationText = getStageDurationText(stage);
+    let bulletStartY = cardY + 60;
 
-    (seg.chips || []).forEach(ch => {
-      const chipText = `${ch.icon} ${ch.label}`;
-      const chipW = Math.min(150, 18 + chipText.length * 6.2);
-      if (chipX + chipW > chipMaxX) return;
-
-      const chip = document.createElementNS(SVG_NS, "rect");
-      chip.setAttribute("x", chipX);
-      chip.setAttribute("y", chipsY);
-      chip.setAttribute("width", chipW);
-      chip.setAttribute("height", 22);
-      chip.setAttribute("rx", 11);
-      chip.setAttribute("fill", "#f1f5f9");
-      chip.setAttribute("stroke", "#e2e8f0");
-      chip.setAttribute("stroke-width", 1);
-      cardG.appendChild(chip);
-
-      const chipT = document.createElementNS(SVG_NS, "text");
-      chipT.setAttribute("x", chipX + 10);
-      chipT.setAttribute("y", chipsY + 15);
-      chipT.setAttribute("font-size", 11);
-      chipT.setAttribute("font-weight", 850);
-      chipT.setAttribute("fill", "#0f172a");
-      chipT.textContent = chipText;
-      cardG.appendChild(chipT);
-
-      chipX += chipW + 8;
-    });
-
-    const bullets = pickBullets(s.bullets || [], MAX_BULLETS).filter(b => {
-      const bl = String(b).toLowerCase();
-      if (bl.startsWith("sources:") || bl.startsWith("source:")) return false;
-      if (bl.startsWith("milestone:")) return false;
-      return true;
-    });
-
-    const bulletAreaX = cardX + 12;
-    const bulletAreaY = chipsY + chipsRowH;
-    const bulletAreaW = cardW - 24;
-
-    const clipId = `clip_${speciesKey.replace(/\s+/g, "_")}_${seg.i}`;
-    const clipUrl = makeClipPathRect(
-      svg,
-      clipId,
-      cardX + 10,
-      cardY + headerH + 6,
-      cardW - 20,
-      cardH - headerH - 12,
-      10
-    );
-
-    const bulletsG = document.createElementNS(SVG_NS, "g");
-    bulletsG.setAttribute("clip-path", clipUrl);
-    cardG.appendChild(bulletsG);
-
-    addWrappedBullets({
-      svg,
-      parentG: bulletsG,
-      x: bulletAreaX + 2,
-      y: bulletAreaY,
-      maxWidthPx: bulletAreaW - 6,
-      bullets,
-      fontSize: bulletFont,
-      lineHeight: bulletLine
-    });
-
-    // Sources footer (wrapped)
-    const hasSources = seg.sources && seg.sources.length;
-    if (hasSources) {
-      const footerY = cardY + cardH - sourcesFooterH - 10;
-
-      const divider = document.createElementNS(SVG_NS, "line");
-      divider.setAttribute("x1", cardX + 12);
-      divider.setAttribute("x2", cardX + cardW - 12);
-      divider.setAttribute("y1", footerY - 6);
-      divider.setAttribute("y2", footerY - 6);
-      divider.setAttribute("stroke", "#e2e8f0");
-      divider.setAttribute("stroke-width", 1);
-      cardG.appendChild(divider);
-
-      const srcLabel = document.createElementNS(SVG_NS, "text");
-      srcLabel.setAttribute("x", cardX + 12);
-      srcLabel.setAttribute("y", footerY + 12);
-      srcLabel.setAttribute("font-size", 10.7);
-      srcLabel.setAttribute("font-weight", 900);
-      srcLabel.setAttribute("fill", "#334155");
-      srcLabel.textContent = "Sources:";
-      cardG.appendChild(srcLabel);
-
-      const srcLinesG = document.createElementNS(SVG_NS, "g");
-      srcLinesG.setAttribute("clip-path", clipUrl);
-      cardG.appendChild(srcLinesG);
-
-      const srcText = seg.sources.join("; ");
-      addWrappedBullets({
-        svg,
-        parentG: srcLinesG,
-        x: cardX + 70,
-        y: footerY - 10,
-        maxWidthPx: (cardW - 82),
-        bullets: [srcText],
-        fontSize: 10.7,
-        lineHeight: 12.8
-      });
+    if (durationText) {
+      const duration = document.createElementNS(SVG_NS, "text");
+      duration.setAttribute("x", cardX + 12);
+      duration.setAttribute("y", bulletStartY);
+      duration.setAttribute("font-size", 11);
+      duration.setAttribute("font-weight", "bold");
+      duration.setAttribute("fill", color);
+      duration.textContent = `⏱ Duration: ${durationText}`;
+      svg.appendChild(duration);
+      bulletStartY += 18;
     }
 
-    svg.appendChild(cardG);
+    // Season/Month range info
+    const rangeText = getStageRangeText(stage);
+    const monthRange = parseMonthRange(rangeText);
+    
+    if (monthRange && typeof monthRange.start === "number" && typeof monthRange.end === "number") {
+      const startName = MONTHS_SHORT[monthRange.start];
+      const endName = MONTHS_SHORT[monthRange.end];
+      const monthLabel = monthRange.start === monthRange.end 
+        ? startName 
+        : `${startName} – ${endName}`;
+
+      const season = document.createElementNS(SVG_NS, "text");
+      season.setAttribute("x", cardX + 12);
+      season.setAttribute("y", bulletStartY);
+      season.setAttribute("font-size", 11);
+      season.setAttribute("font-weight", "bold");
+      season.setAttribute("fill", color);
+      season.setAttribute("text-decoration", "underline");
+      season.textContent = `📅 Months: ${monthLabel}`;
+      svg.appendChild(season);
+      bulletStartY += 18;
+    }
+
+    // Other bullet points
+    const bullets = pickBullets(stage.bullets || [], 3);
+    let bulletY = bulletStartY + 8;
+    
+    bullets.forEach(bullet => {
+      const text = document.createElementNS(SVG_NS, "text");
+      text.setAttribute("x", cardX + 12);
+      text.setAttribute("y", bulletY);
+      text.setAttribute("font-size", 10);
+      text.setAttribute("fill", "#333");
+      text.textContent = "• " + shorten(String(bullet), 45);
+      svg.appendChild(text);
+      bulletY += 15;
+    });
   });
 
-  const height = bottomCardY + botMaxH + 90;
+  const height = cardsStartY + (n * cardSpacing) + 100;
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.setAttribute("height", height);
 
