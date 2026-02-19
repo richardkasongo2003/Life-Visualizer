@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>LifeViz</title>
+  <link rel="stylesheet" href="/static/css/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>LifeViz</h1>
+      <p class="subtitle">Generate clean life-history stage diagrams from JSON or Excel.</p>
+      <span class="badge">SVG → PNG → PPTX</span>
+    </header>
+
+    <div class="controls">
+      <div class="control-group">
+        <label>
+          Template
+          <select id="templateSelect">
+            <option value="timeline">Timeline</option>
+          </select>
+        </label>
+
+        <label>
+          Species
+          <select id="speciesSelect"></select>
+        </label>
+
+        <label>
+          Load JSON file
+          <input id="fileInput" type="file" accept=".json" />
+        </label>
+
+        <label>
+          Paste JSON
+          <textarea id="jsonInput" rows="6" placeholder="Paste JSON here..."></textarea>
+        </label>
+
+        <div class="button-row">
+          <button id="renderBtn">Render</button>
+          <button id="aiEnhanceBtn" class="secondary">AI Enhance</button>
+          <button id="downloadPngBtn" class="ghost">Download PNG</button>
+          <button id="exportPptxBtn" class="ghost">Export PPTX</button>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <label>
+          Excel (.xlsx)
+          <input id="excelInput" type="file" accept=".xlsx" />
+        </label>
+
+        <div class="button-row">
+          <button id="uploadExcelFullBtn" class="secondary">Upload Workbook (Full)</button>
+          <button id="uploadExcelSimpleBtn" class="secondary">Upload Template (Simple)</button>
+        </div>
+      </div>
+
+      <div class="control-group zoom-group">
+        <div>
+          <div class="zoom-hint">Zoom (does not clip)</div>
+          <input id="zoomRange" type="range" min="50" max="160" value="100" />
+        </div>
+        <div class="zoom-label" id="zoomLabel">100%</div>
+      </div>
+    </div>
+
+    <div class="canvas-wrap">
+      <div id="svgContainer">
+        <div id="svgScaler">
+          <div class="status">Loading sample…</div>
+        </div>
+      </div>
+    </div>
+
+    <footer>LifeViz • Local rendering + optional AI cleanup</footer>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
