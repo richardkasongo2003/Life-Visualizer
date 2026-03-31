@@ -3,20 +3,33 @@
   "species": [
     {
       "name": "Demo species",
-      "title": "Demo species – Life history",
+      "title": "Demo species - Life history",
       "imageUrl": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/5e/Snail_example.jpg/320px-Snail_example.jpg",
       "stages": [
         {
           "title": "Egg",
-          "bullets": ["Duration: 8–10 days", "Habitat: Shallow gravel"]
+          "bullets": [
+            "Duration: 8-10 days",
+            "Timing: Apr-May",
+            "Habitat: Shallow gravel"
+          ]
         },
         {
           "title": "Juvenile",
-          "bullets": ["Duration: 3–5 weeks", "Physical: shell translucent"]
+          "bullets": [
+            "Duration: 3-5 weeks",
+            "Timing: May-Jun",
+            "Physical: shell translucent"
+          ]
         },
         {
           "title": "Adult",
-          "bullets": ["Lifespan: 2–3 years", "Reproduction: multiple clutches"]
+          "bullets": [
+            "Duration: 2-3 years",
+            "Timing: Year-round",
+            "Lifespan: 2-3 years",
+            "Reproduction: multiple clutches"
+          ]
         }
       ]
     }

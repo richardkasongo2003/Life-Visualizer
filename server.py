@@ -29,6 +29,267 @@ def _pretty_label(col_name: str) -> str:
     return re.sub(r'\s+', ' ', str(col_name)).strip().capitalize()
 
 
+def _clean_cell(val):
+    if pd.isna(val):
+        return ""
+    text = str(val).strip()
+    return "" if not text or text.lower() == 'nan' else text
+
+
+def _excelish_month(val):
+    """
+    Convert workbook timing values into month labels the frontend can parse.
+    Supports Excel serial dates, timestamps, and month-like strings.
+    """
+    if pd.isna(val):
+        return ""
+
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        try:
+            dt = pd.to_datetime("1899-12-30") + pd.to_timedelta(float(val), unit="D")
+            return dt.strftime("%b")
+        except Exception:
+            return str(val).strip()
+
+    try:
+        dt = pd.to_datetime(val, errors="coerce")
+        if pd.notna(dt):
+            return dt.strftime("%b")
+    except Exception:
+        pass
+
+    text = str(val).strip()
+    if not text:
+        return ""
+
+    lower = text.lower()
+    month_map = {
+        "jan": "Jan", "january": "Jan",
+        "feb": "Feb", "february": "Feb",
+        "mar": "Mar", "march": "Mar",
+        "apr": "Apr", "april": "Apr",
+        "may": "May",
+        "jun": "Jun", "june": "Jun",
+        "jul": "Jul", "july": "Jul",
+        "aug": "Aug", "august": "Aug",
+        "sep": "Sep", "sept": "Sep", "september": "Sep",
+        "oct": "Oct", "october": "Oct",
+        "nov": "Nov", "november": "Nov",
+        "dec": "Dec", "december": "Dec",
+    }
+    for key, label in month_map.items():
+        if key in lower:
+            return label
+    return text
+
+
+def _range_text_from_values(values, suffix=""):
+    cleaned = [str(v).strip() for v in values if str(v).strip()]
+    if not cleaned:
+        return ""
+    uniq = list(dict.fromkeys(cleaned))
+    if len(uniq) == 1:
+        return f"{uniq[0]}{suffix}".strip()
+    return f"{uniq[0]}-{uniq[-1]}{suffix}".strip()
+
+
+def _structured_life_history_workbook_to_species_list(sheets):
+    """
+    Parse the multi-sheet workbook format used by the attached example workbook.
+    Expected sheets include:
+      - Life History Stages
+      - Habitat
+      - Life Span
+      - Resource Needs
+    """
+    required_sheet = None
+    for name in sheets:
+        if _normalize_col(name) == "life history stages":
+            required_sheet = name
+            break
+    if not required_sheet:
+        return None
+
+    species_map = {}
+
+    def get_species_entry(scientific_name, common_name="", population=""):
+        sci = _clean_cell(scientific_name)
+        if not sci:
+            return None
+        key = sci.lower()
+        entry = species_map.setdefault(key, {
+            "name": sci,
+            "commonName": _clean_cell(common_name),
+            "population": _clean_cell(population),
+            "imageFile": None,
+            "imageUrl": None,
+            "lifespan": [],
+            "stages": {}
+        })
+        if common_name and not entry["commonName"]:
+            entry["commonName"] = _clean_cell(common_name)
+        if population and not entry["population"]:
+            entry["population"] = _clean_cell(population)
+        return entry
+
+    def get_stage_entry(species_entry, stage_name):
+        stage = _clean_cell(stage_name)
+        if not species_entry or not stage:
+            return None
+        key = stage.lower()
+        return species_entry["stages"].setdefault(key, {
+            "name": stage,
+            "duration_values": [],
+            "duration_units": [],
+            "timing_months": [],
+            "bullets": []
+        })
+
+    stage_df = sheets[required_sheet]
+    stage_cols = {_normalize_col(c): c for c in stage_df.columns}
+
+    sci_col = stage_cols.get("species scientific name")
+    common_col = stage_cols.get("species common name")
+    pop_col = stage_cols.get("population (if appropriate)")
+    life_stage_col = stage_cols.get("lifestage")
+    duration_metric_col = stage_cols.get("metric")
+    duration_value_col = stage_cols.get("value")
+    timing_metric_col = stage_df.columns[9] if len(stage_df.columns) > 9 else None
+    timing_value_col = stage_df.columns[10] if len(stage_df.columns) > 10 else None
+    repro_strategy_col = stage_cols.get("reproductive strategy")
+
+    for _, row in stage_df.iterrows():
+        species_entry = get_species_entry(
+            row.get(sci_col),
+            row.get(common_col) if common_col else "",
+            row.get(pop_col) if pop_col else ""
+        )
+        stage_entry = get_stage_entry(species_entry, row.get(life_stage_col) if life_stage_col else "")
+        if not stage_entry:
+            continue
+
+        metric = _clean_cell(row.get(duration_metric_col)) if duration_metric_col else ""
+        value = _clean_cell(row.get(duration_value_col)) if duration_value_col else ""
+        if metric and value:
+            stage_entry["duration_units"].append(metric)
+            stage_entry["duration_values"].append(value)
+
+        timing_metric = _clean_cell(row.get(timing_metric_col)) if timing_metric_col else ""
+        timing_value = row.get(timing_value_col) if timing_value_col else None
+        if timing_metric and not pd.isna(timing_value):
+            stage_entry["timing_months"].append(_excelish_month(timing_value))
+
+        repro_strategy = _clean_cell(row.get(repro_strategy_col)) if repro_strategy_col else ""
+        if repro_strategy:
+            stage_entry["bullets"].append(f"Reproduction: {repro_strategy}")
+
+    habitat_sheet = next((sheets[name] for name in sheets if _normalize_col(name) == "habitat"), None)
+    if habitat_sheet is not None and not habitat_sheet.empty:
+        habitat_cols = list(habitat_sheet.columns)
+        sci_col = habitat_cols[0] if len(habitat_cols) > 0 else None
+        common_col = habitat_cols[1] if len(habitat_cols) > 1 else None
+        pop_col = habitat_cols[2] if len(habitat_cols) > 2 else None
+        stage_col = habitat_cols[3] if len(habitat_cols) > 3 else None
+        habitat_names = habitat_cols[4:]
+
+        for _, row in habitat_sheet.iterrows():
+            species_entry = get_species_entry(row.get(sci_col), row.get(common_col), row.get(pop_col))
+            stage_entry = get_stage_entry(species_entry, row.get(stage_col))
+            if not stage_entry:
+                continue
+            active = [str(h).strip() for h in habitat_names if _clean_cell(row.get(h)).lower() in ("x", "yes", "true", "1")]
+            if active:
+                stage_entry["bullets"].append(f"Habitat: {', '.join(active)}")
+
+    resource_sheet = next((sheets[name] for name in sheets if _normalize_col(name) == "resource needs"), None)
+    if resource_sheet is not None and not resource_sheet.empty:
+        resource_cols = list(resource_sheet.columns)
+        sci_col = resource_cols[0] if len(resource_cols) > 0 else None
+        common_col = resource_cols[1] if len(resource_cols) > 1 else None
+        pop_col = resource_cols[2] if len(resource_cols) > 2 else None
+        stage_col = resource_cols[3] if len(resource_cols) > 3 else None
+        need_names = resource_cols[4:]
+
+        for _, row in resource_sheet.iterrows():
+            species_entry = get_species_entry(row.get(sci_col), row.get(common_col), row.get(pop_col))
+            stage_entry = get_stage_entry(species_entry, row.get(stage_col))
+            if not stage_entry:
+                continue
+
+            active = []
+            for need in need_names:
+                use = _clean_cell(row.get(need))
+                if use:
+                    active.append(f"{need}: {use}")
+            if active:
+                stage_entry["bullets"].append(f"Resource needs: {'; '.join(active[:4])}")
+
+    lifespan_sheet = next((sheets[name] for name in sheets if _normalize_col(name) == "life span"), None)
+    if lifespan_sheet is not None and not lifespan_sheet.empty:
+        life_cols = {_normalize_col(c): c for c in lifespan_sheet.columns}
+        sci_col = life_cols.get("species scientific name")
+        common_col = life_cols.get("species common name")
+        metric_col = life_cols.get("life span metric")
+        value_col = life_cols.get("life span value")
+
+        for _, row in lifespan_sheet.iterrows():
+            species_entry = get_species_entry(row.get(sci_col), row.get(common_col) if common_col else "", "")
+            if not species_entry:
+                continue
+            metric = _clean_cell(row.get(metric_col)) if metric_col else ""
+            value = _clean_cell(row.get(value_col)) if value_col else ""
+            if metric and value:
+                species_entry["lifespan"].append((metric, value))
+
+    species_out = []
+    for info in species_map.values():
+        title_base = info["commonName"] or info["name"]
+        title = f"{title_base} - Life history"
+        if info["population"]:
+          title = f"{title_base} ({info['population']}) - Life history"
+
+        lifespan_text = ""
+        lifespan_values = [val for metric, val in info["lifespan"] if "year" in metric.lower()]
+        if lifespan_values:
+            lifespan_text = _range_text_from_values(lifespan_values, " years")
+        elif info["lifespan"]:
+            lifespan_text = _range_text_from_values([val for _, val in info["lifespan"]])
+
+        stages_out = []
+        for st in info["stages"].values():
+            bullets = []
+
+            duration_suffix = ""
+            if st["duration_units"]:
+                duration_suffix = f" {st['duration_units'][0]}"
+            duration_text = _range_text_from_values(st["duration_values"], duration_suffix)
+            if duration_text:
+                bullets.append(f"Duration: {duration_text}")
+
+            months = [m for m in st["timing_months"] if m]
+            if months:
+                bullets.append(f"Timing: {_range_text_from_values(months)}")
+
+            if lifespan_text:
+                bullets.append(f"Lifespan: {lifespan_text}")
+
+            bullets.extend(st["bullets"])
+            stages_out.append({
+                "title": st["name"],
+                "bullets": list(dict.fromkeys([b for b in bullets if b]))
+            })
+
+        species_out.append({
+            "name": info["name"],
+            "title": title,
+            "imageFile": info["imageFile"],
+            "imageUrl": info["imageUrl"],
+            "stages": stages_out
+        })
+
+    return species_out
+
+
 def _add_bullets_from_row(df, row, species_dict, species_col, stage_col=None):
     """
     Generic aggregator for the full workbook route.
@@ -439,6 +700,9 @@ def ai_enhance():
         "TASK:\n"
         "- Reorder stages into a logical life-history sequence.\n"
         "- Merge near-duplicate stages when appropriate.\n"
+        "- Preserve clear 'Duration:' bullets when present.\n"
+        "- Preserve clear 'Timing:' / seasonal timing bullets when present.\n"
+        "- Preserve one clear 'Lifespan:' value when present anywhere in the input.\n"
         "- For each stage, keep at most 5 concise bullets summarizing the information\n"
         "  (habitat, movement, food, reproduction, lifespan, etc.).\n"
         "- Do NOT invent any new biological facts; only rephrase or combine what is given.\n\n"

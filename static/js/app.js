@@ -201,6 +201,7 @@ function addWrappedBullets({
   y,
   maxWidthPx,
   bullets,
+  maxHeight = Infinity,
   fontSize = 11.2,
   lineHeight = 14
 }) {
@@ -217,12 +218,30 @@ function addWrappedBullets({
   };
 
   let usedHeight = 0;
+  let lastTextEl = null;
+
+  const fitWithEllipsis = (rawText) => {
+    let candidate = String(rawText || "").replace(/\.\.\.$/, "").trim();
+    if (!candidate) return "...";
+
+    while (candidate.length > 1 && measureFn(candidate + "...") > maxWidthPx) {
+      candidate = candidate.slice(0, -1).trimEnd();
+    }
+
+    return candidate + "...";
+  };
 
   for (const b of (bullets || [])) {
     const raw = "• " + safeText(b);
     const lines = splitToLinesByWidth(raw, measureFn, maxWidthPx);
 
     for (const line of lines) {
+      if (usedHeight + lineHeight > maxHeight) {
+        if (lastTextEl) lastTextEl.textContent = fitWithEllipsis(lastTextEl.textContent);
+        svg.removeChild(measurer);
+        return usedHeight;
+      }
+
       const t = document.createElementNS(SVG_NS, "text");
       t.setAttribute("x", x);
       t.setAttribute("y", y + usedHeight + lineHeight);
@@ -231,6 +250,7 @@ function addWrappedBullets({
       t.textContent = shorten(line, BULLET_CHAR_LIMIT);
 
       parentG.appendChild(t);
+      lastTextEl = t;
       usedHeight += lineHeight;
     }
   }
@@ -289,6 +309,17 @@ function addWrappedTextLines({
 
   svg.removeChild(measurer);
   return lines.length * lineHeight;
+}
+
+function getSpeciesLifespanText(data) {
+  const stages = Array.isArray(data?.stages) ? data.stages : [];
+
+  for (const stage of stages) {
+    const value = getBulletValue(stage, ["lifespan:"]);
+    if (value) return value;
+  }
+
+  return "";
 }
 
 function estimateBulletHeight({
@@ -403,6 +434,16 @@ function extractKeyFacts(stage) {
   if (threats) chips.push({ icon: "⚠️", label: "Threats", value: threats });
 
   return chips.slice(0, 4);
+}
+
+function getStageSummaryBullets(stage, maxItems = 2) {
+  const facts = extractKeyFacts(stage).map(chip => `${chip.label}: ${chip.value}`);
+  const milestones = getStageMilestones(stage).map(m => `Milestone: ${m}`);
+  const notes = pickBullets(stage.bullets || [], 6).filter(
+    b => !/^(duration|timing|seasonal timing|date range|range|lifespan|habitat|food|diet|movement|reproduction|physical|traits|threats|risk|sources?|milestone)\s*:/i.test(String(b))
+  );
+
+  return [...facts, ...milestones, ...notes].slice(0, maxItems);
 }
 
 function durationToDays(durationText) {
@@ -840,30 +881,7 @@ function renderTimeline(data) {
       bulletStartY += Math.max(16, used + 2);
     }
 
-    const rangeText = getStageRangeText(stage);
-    const monthRange = parseMonthRange(rangeText);
-    if (monthRange && typeof monthRange.start === "number" && typeof monthRange.end === "number") {
-      const startName = MONTHS_SHORT[monthRange.start];
-      const endName = MONTHS_SHORT[monthRange.end];
-      const monthLabel = monthRange.start === monthRange.end ? startName : `${startName} - ${endName}`;
-
-      const used = addWrappedTextLines({
-        svg,
-        parentG: svg,
-        text: `Months: ${monthLabel}`,
-        x: cardX + 12,
-        y: bulletStartY,
-        maxWidthPx: cardW - 24,
-        fontSize: 11,
-        lineHeight: 13,
-        maxLines: 2,
-        fill: color,
-        fontWeight: "bold"
-      });
-      bulletStartY += Math.max(16, used + 2);
-    }
-
-    const bullets = pickBullets(stage.bullets || [], 3);
+    const bullets = getStageSummaryBullets(stage, 2);
     addWrappedBullets({
       svg,
       parentG: svg,
@@ -871,6 +889,7 @@ function renderTimeline(data) {
       y: bulletStartY - 6,
       maxWidthPx: cardW - 24,
       bullets,
+      maxHeight: Math.max(0, (cardY + 220) - bulletStartY - 12),
       fontSize: 10,
       lineHeight: 13
     });
@@ -1049,50 +1068,51 @@ function renderCircular(data) {
   mainRing.setAttribute("stroke-dasharray", "6 6");
   svg.appendChild(mainRing);
 
-  const durationRingR = 172;
-  const durationRingStroke = 20;
-
-  const durationTrack = document.createElementNS(SVG_NS, "circle");
-  durationTrack.setAttribute("cx", centerX);
-  durationTrack.setAttribute("cy", centerY);
-  durationTrack.setAttribute("r", durationRingR);
-  durationTrack.setAttribute("fill", "none");
-  durationTrack.setAttribute("stroke", "#e2e8f0");
-  durationTrack.setAttribute("stroke-width", durationRingStroke);
-  svg.appendChild(durationTrack);
+  const durationPieOuterR = 124;
+  const durationPieInnerR = 60;
 
   const toArcPoint = (cx, cy, r, deg) => {
     const rad = deg * Math.PI / 180;
     return { x: cx + Math.cos(rad) * r, y: cy + Math.sin(rad) * r };
   };
 
-  const arcPath = (cx, cy, r, startDeg, endDeg) => {
-    const start = toArcPoint(cx, cy, r, startDeg);
-    const end = toArcPoint(cx, cy, r, endDeg);
+  const donutSlicePath = (cx, cy, outerRadius, innerRadius, startDeg, endDeg) => {
+    const outerStart = toArcPoint(cx, cy, outerRadius, startDeg);
+    const outerEnd = toArcPoint(cx, cy, outerRadius, endDeg);
+    const innerEnd = toArcPoint(cx, cy, innerRadius, endDeg);
+    const innerStart = toArcPoint(cx, cy, innerRadius, startDeg);
     const delta = Math.abs(endDeg - startDeg);
     const largeArc = delta > 180 ? "1" : "0";
-    return `M ${start.x} ${start.y} A ${r} ${r} 0 ${largeArc} 1 ${end.x} ${end.y}`;
+
+    return [
+      `M ${outerStart.x} ${outerStart.y}`,
+      `A ${outerRadius} ${outerRadius} 0 ${largeArc} 1 ${outerEnd.x} ${outerEnd.y}`,
+      `L ${innerEnd.x} ${innerEnd.y}`,
+      `A ${innerRadius} ${innerRadius} 0 ${largeArc} 0 ${innerStart.x} ${innerStart.y}`,
+      "Z"
+    ].join(" ");
   };
 
-  const durationMeta = stages.map((stage) => parseDurationForRing(getStageDurationText(stage)));
-  const nonYearKnown = durationMeta.filter(d => d.days !== null && d.bucket !== "year").map(d => d.days).sort((a, b) => a - b);
-
-  let fallbackNonYear = 14;
-  if (nonYearKnown.length) {
-    const mid = Math.floor(nonYearKnown.length / 2);
-    fallbackNonYear = nonYearKnown.length % 2 ? nonYearKnown[mid] : (nonYearKnown[mid - 1] + nonYearKnown[mid]) / 2;
-  }
-
-  const yearWeight = Math.max(120, Math.min(220, fallbackNonYear * 8));
-  const durationWeights = durationMeta.map((meta) => {
-    if (meta.bucket === "year") return yearWeight;
-    if (meta.days !== null) return Math.min(meta.days, yearWeight);
-    return fallbackNonYear;
+  const durationValues = stages.map((stage) => {
+    const days = durationToDays(getStageDurationText(stage));
+    return (Number.isFinite(days) && days > 0) ? days : null;
   });
 
+  const knownDurations = durationValues.filter(v => v !== null).sort((a, b) => a - b);
+  let fallbackDuration = 14;
+  if (knownDurations.length) {
+    const mid = Math.floor(knownDurations.length / 2);
+    fallbackDuration = knownDurations.length % 2
+      ? knownDurations[mid]
+      : (knownDurations[mid - 1] + knownDurations[mid]) / 2;
+  }
+
+  const durationWeights = durationValues.map(v => v ?? fallbackDuration);
+
   const totalDuration = durationWeights.reduce((sum, v) => sum + v, 0) || 1;
-  const gapDeg = n > 2 ? 1.3 : 0.7;
+  const gapDeg = n > 2 ? 1.6 : 0.9;
   let cursorDeg = -90;
+  const pieSlices = [];
 
   durationWeights.forEach((weight, i) => {
     const sweepDeg = (weight / totalDuration) * 360;
@@ -1100,49 +1120,80 @@ function renderCircular(data) {
     const startDeg = cursorDeg + (gapDeg / 2);
     const endDeg = startDeg + visibleSweep;
 
-    const arc = document.createElementNS(SVG_NS, "path");
-    arc.setAttribute("d", arcPath(centerX, centerY, durationRingR, startDeg, endDeg));
-    arc.setAttribute("fill", "none");
-    arc.setAttribute("stroke", heatColor(i, n));
-    arc.setAttribute("stroke-width", durationRingStroke);
-    arc.setAttribute("stroke-linecap", "round");
-
-    const durationText = getStageDurationText(stages[i]) || "Duration unavailable";
-    const tip = document.createElementNS(SVG_NS, "title");
-    tip.textContent = `Stage ${i + 1}: ${durationText}`;
-    arc.appendChild(tip);
-
-    svg.appendChild(arc);
+    pieSlices.push({
+      stageNum: i + 1,
+      startDeg,
+      endDeg,
+      sweepDeg: visibleSweep,
+      color: heatColor(i, n)
+    });
     cursorDeg += sweepDeg;
+  });
+
+  pieSlices.forEach((slice) => {
+    const wedge = document.createElementNS(SVG_NS, "path");
+    wedge.setAttribute("d", donutSlicePath(centerX, centerY, durationPieOuterR, durationPieInnerR, slice.startDeg, slice.endDeg));
+    wedge.setAttribute("fill", slice.color);
+    wedge.setAttribute("opacity", "0.94");
+    wedge.setAttribute("stroke", "#ffffff");
+    wedge.setAttribute("stroke-width", 2);
+
+    const durationText = getStageDurationText(stages[slice.stageNum - 1]) || "Duration unavailable";
+    const tip = document.createElementNS(SVG_NS, "title");
+    tip.textContent = `Stage ${slice.stageNum}: ${durationText}`;
+    wedge.appendChild(tip);
+
+    svg.appendChild(wedge);
+
+    if (slice.sweepDeg >= 12) {
+      const midDeg = (slice.startDeg + slice.endDeg) / 2;
+      const labelPoint = toArcPoint(centerX, centerY, (durationPieOuterR + durationPieInnerR) / 2, midDeg);
+      const pieLabel = document.createElementNS(SVG_NS, "text");
+      pieLabel.setAttribute("x", labelPoint.x);
+      pieLabel.setAttribute("y", labelPoint.y + 4);
+      pieLabel.setAttribute("text-anchor", "middle");
+      pieLabel.setAttribute("font-size", 10);
+      pieLabel.setAttribute("font-weight", "bold");
+      pieLabel.setAttribute("fill", "#ffffff");
+      pieLabel.textContent = `${slice.stageNum}`;
+      svg.appendChild(pieLabel);
+    }
   });
 
   const core = document.createElementNS(SVG_NS, "circle");
   core.setAttribute("cx", centerX);
   core.setAttribute("cy", centerY);
-  core.setAttribute("r", 120);
+  core.setAttribute("r", 56);
   core.setAttribute("fill", "#ffffff");
   core.setAttribute("stroke", "#cbd5e1");
   core.setAttribute("stroke-width", 1.5);
   svg.appendChild(core);
 
+  const lifespanText = getSpeciesLifespanText(data) || "Not provided";
+
   const coreLabel = document.createElementNS(SVG_NS, "text");
   coreLabel.setAttribute("x", centerX);
-  coreLabel.setAttribute("y", centerY - 4);
+  coreLabel.setAttribute("y", centerY - 12);
   coreLabel.setAttribute("text-anchor", "middle");
-  coreLabel.setAttribute("font-size", 17);
+  coreLabel.setAttribute("font-size", 11);
   coreLabel.setAttribute("font-weight", "bold");
   coreLabel.setAttribute("fill", "#0f172a");
-  coreLabel.textContent = "Life Cycle";
+  coreLabel.textContent = "Lifespan";
   svg.appendChild(coreLabel);
 
-  const coreSubLabel = document.createElementNS(SVG_NS, "text");
-  coreSubLabel.setAttribute("x", centerX);
-  coreSubLabel.setAttribute("y", centerY + 18);
-  coreSubLabel.setAttribute("text-anchor", "middle");
-  coreSubLabel.setAttribute("font-size", 12);
-  coreSubLabel.setAttribute("fill", "#64748b");
-  coreSubLabel.textContent = `${n} Stages - duration ring (years normalized)`;
-  svg.appendChild(coreSubLabel);
+  addWrappedTextLines({
+    svg,
+    parentG: svg,
+    text: lifespanText,
+    x: centerX - 38,
+    y: centerY + 4,
+    maxWidthPx: 76,
+    fontSize: 10,
+    lineHeight: 10.5,
+    maxLines: 3,
+    fill: "#334155",
+    fontWeight: "bold"
+  });
 
   let maxCardBottom = centerY + outerR;
 
@@ -1252,30 +1303,7 @@ function renderCircular(data) {
       infoY += Math.max(13, used);
     }
 
-    const rangeText = getStageRangeText(stage);
-    const monthRange = parseMonthRange(rangeText);
-    if (monthRange && typeof monthRange.start === "number" && typeof monthRange.end === "number") {
-      const startName = MONTHS_SHORT[monthRange.start];
-      const endName = MONTHS_SHORT[monthRange.end];
-      const monthLabel = monthRange.start === monthRange.end ? startName : `${startName}-${endName}`;
-
-      const used = addWrappedTextLines({
-        svg,
-        parentG: svg,
-        text: `Months: ${monthLabel}`,
-        x: cardX + 10,
-        y: infoY,
-        maxWidthPx: cardW - 18,
-        fontSize: 10.5,
-        lineHeight: 12,
-        maxLines: 2,
-        fill: "#334155",
-        fontWeight: "bold"
-      });
-      infoY += Math.max(13, used);
-    }
-
-    const detailBullets = pickBullets(stage.bullets || [], 3).filter(b => !/^(duration|timing|seasonal timing|date range|range)\s*:/i.test(String(b)));
+    const detailBullets = getStageSummaryBullets(stage, 2);
 
     addWrappedBullets({
       svg,
@@ -1284,6 +1312,7 @@ function renderCircular(data) {
       y: infoY - 12,
       maxWidthPx: cardW - 18,
       bullets: detailBullets,
+      maxHeight: Math.max(0, (cardY + cardH) - infoY - 10),
       fontSize: 10,
       lineHeight: 12
     });
