@@ -122,6 +122,17 @@ function tokenizeForWrap(text) {
   return normalized ? normalized.split(" ") : [];
 }
 
+function splitWordsIntoChunks(text, maxWordsPerLine = 6) {
+  const words = String(text || "").replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
+  if (!words.length) return [];
+
+  const chunks = [];
+  for (let i = 0; i < words.length; i += maxWordsPerLine) {
+    chunks.push(words.slice(i, i + maxWordsPerLine).join(" "));
+  }
+  return chunks;
+}
+
 function splitToLinesByWidth(text, measureFn, maxWidthPx) {
   const tokens = tokenizeForWrap(text);
   const lines = [];
@@ -203,7 +214,8 @@ function addWrappedBullets({
   bullets,
   maxHeight = Infinity,
   fontSize = 11.2,
-  lineHeight = 14
+  lineHeight = 14,
+  maxWordsPerLine = 6
 }) {
   const measurer = document.createElementNS(SVG_NS, "text");
   measurer.setAttribute("x", -9999);
@@ -232,8 +244,14 @@ function addWrappedBullets({
   };
 
   for (const b of (bullets || [])) {
-    const raw = "• " + safeText(b);
-    const lines = splitToLinesByWidth(raw, measureFn, maxWidthPx);
+    const logicalLines = splitWordsIntoChunks(safeText(b), maxWordsPerLine);
+    const lines = [];
+
+    logicalLines.forEach((chunk, idx) => {
+      const raw = `${idx === 0 ? "- " : ""}${chunk}`;
+      const wrapped = splitToLinesByWidth(raw, measureFn, maxWidthPx);
+      lines.push(...wrapped);
+    });
 
     for (const line of lines) {
       if (usedHeight + lineHeight > maxHeight) {
@@ -353,6 +371,35 @@ function estimateBulletHeight({
   return linesCount * lineHeight;
 }
 
+function estimateWrappedTextHeight({
+  svg,
+  text,
+  maxWidthPx,
+  fontSize = 12,
+  lineHeight = 14,
+  maxLines = Infinity,
+  fontWeight = null
+}) {
+  const measurer = document.createElementNS(SVG_NS, "text");
+  measurer.setAttribute("x", -9999);
+  measurer.setAttribute("y", -9999);
+  measurer.setAttribute("font-size", fontSize);
+  if (fontWeight !== null) measurer.setAttribute("font-weight", fontWeight);
+  measurer.setAttribute("visibility", "hidden");
+  svg.appendChild(measurer);
+
+  const measureFn = (t) => {
+    measurer.textContent = t;
+    return measurer.getComputedTextLength();
+  };
+
+  const rawLines = splitToLinesByWidth(safeText(text), measureFn, maxWidthPx);
+  const lineCount = Math.min(rawLines.length, Math.max(1, maxLines));
+
+  svg.removeChild(measurer);
+  return lineCount * lineHeight;
+}
+
 // =========================
 // Parsing helpers
 // =========================
@@ -444,6 +491,18 @@ function getStageSummaryBullets(stage, maxItems = 2) {
   );
 
   return [...facts, ...milestones, ...notes].slice(0, maxItems);
+}
+
+function getAdaptiveBulletLimit(template, stageCount) {
+  if (template === "circular") {
+    if (stageCount <= 4) return 3;
+    if (stageCount <= 7) return 2;
+    return 1;
+  }
+
+  if (stageCount <= 5) return 3;
+  if (stageCount <= 8) return 2;
+  return 1;
 }
 
 function durationToDays(durationText) {
@@ -651,6 +710,7 @@ function renderTimeline(data) {
   const stages = data.stages || [];
   const n = stages.length;
   if (!n) return;
+  const bulletLimit = getAdaptiveBulletLimit("timeline", n);
 
   const width = 1200;
   const padding = 80;
@@ -792,18 +852,49 @@ function renderTimeline(data) {
 
   const cardsStartY = monthBandY + finalMonthBandH + 40;
   const timelineX = padding + 30;
+  let cursorY = cardsStartY;
 
   const timelineLine = document.createElementNS(SVG_NS, "line");
   timelineLine.setAttribute("x1", timelineX);
   timelineLine.setAttribute("x2", timelineX);
   timelineLine.setAttribute("y1", cardsStartY);
-  timelineLine.setAttribute("y2", cardsStartY + (n * cardSpacing));
   timelineLine.setAttribute("stroke", "#ddd");
   timelineLine.setAttribute("stroke-width", 3);
   svg.appendChild(timelineLine);
 
   stages.forEach((stage, i) => {
-    const cardY = cardsStartY + i * cardSpacing;
+    const titleHeight = estimateWrappedTextHeight({
+      svg,
+      text: stage.title || `Stage ${i + 1}`,
+      maxWidthPx: cardW - 24,
+      fontSize: 13,
+      lineHeight: 13,
+      maxLines: 2,
+      fontWeight: "bold"
+    });
+
+    const durationText = getStageDurationText(stage);
+    const durationHeight = durationText ? estimateWrappedTextHeight({
+      svg,
+      text: `Duration: ${durationText}`,
+      maxWidthPx: cardW - 24,
+      fontSize: 11,
+      lineHeight: 13,
+      maxLines: 2,
+      fontWeight: "bold"
+    }) : 0;
+
+    const bullets = getStageSummaryBullets(stage, bulletLimit);
+    const bulletHeight = estimateBulletHeight({
+      svg,
+      maxWidthPx: cardW - 24,
+      bullets,
+      fontSize: 10,
+      lineHeight: 13
+    });
+
+    const cardH = Math.max(220, 40 + 12 + titleHeight + 12 + durationHeight + (durationText ? 6 : 0) + bulletHeight + 20);
+    const cardY = cursorY;
     const color = heatColor(i, n);
 
     const dot = document.createElementNS(SVG_NS, "circle");
@@ -831,7 +922,7 @@ function renderTimeline(data) {
     card.setAttribute("x", cardX);
     card.setAttribute("y", cardY);
     card.setAttribute("width", cardW);
-    card.setAttribute("height", 220);
+    card.setAttribute("height", cardH);
     card.setAttribute("rx", 8);
     card.setAttribute("fill", "#fff");
     card.setAttribute("stroke", "#ddd");
@@ -847,9 +938,22 @@ function renderTimeline(data) {
     header.setAttribute("fill", color);
     svg.appendChild(header);
 
+    const headerClipId = `timeline-card-head-${i}`;
+    const bodyClipId = `timeline-card-body-${i}`;
+    const headerClip = makeClipPathRect(svg, headerClipId, cardX + 8, cardY + 4, cardW - 16, 30, 6);
+    const bodyClip = makeClipPathRect(svg, bodyClipId, cardX + 8, cardY + 44, cardW - 16, cardH - 54, 6);
+
+    const headerTextGroup = document.createElementNS(SVG_NS, "g");
+    headerTextGroup.setAttribute("clip-path", headerClip);
+    svg.appendChild(headerTextGroup);
+
+    const bodyTextGroup = document.createElementNS(SVG_NS, "g");
+    bodyTextGroup.setAttribute("clip-path", bodyClip);
+    svg.appendChild(bodyTextGroup);
+
     addWrappedTextLines({
       svg,
-      parentG: svg,
+      parentG: headerTextGroup,
       text: stage.title || `Stage ${i + 1}`,
       x: cardX + 12,
       y: cardY + 20,
@@ -861,13 +965,12 @@ function renderTimeline(data) {
       fontWeight: "bold"
     });
 
-    const durationText = getStageDurationText(stage);
     let bulletStartY = cardY + 60;
 
     if (durationText) {
       const used = addWrappedTextLines({
         svg,
-        parentG: svg,
+        parentG: bodyTextGroup,
         text: `Duration: ${durationText}`,
         x: cardX + 12,
         y: bulletStartY,
@@ -881,21 +984,24 @@ function renderTimeline(data) {
       bulletStartY += Math.max(16, used + 2);
     }
 
-    const bullets = getStageSummaryBullets(stage, 2);
     addWrappedBullets({
       svg,
-      parentG: svg,
+      parentG: bodyTextGroup,
       x: cardX + 12,
       y: bulletStartY - 6,
       maxWidthPx: cardW - 24,
       bullets,
-      maxHeight: Math.max(0, (cardY + 220) - bulletStartY - 12),
+      maxHeight: Math.max(0, (cardY + cardH) - bulletStartY - 12),
       fontSize: 10,
       lineHeight: 13
     });
+
+    cursorY += cardH + 60;
   });
 
-  const height = cardsStartY + (n * cardSpacing) + 100;
+  timelineLine.setAttribute("y2", Math.max(cardsStartY, cursorY - 60 + 40));
+
+  const height = cursorY + 40;
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.setAttribute("height", height);
 
@@ -907,6 +1013,7 @@ function renderCircular(data) {
   const stages = data.stages || [];
   const n = stages.length;
   if (!n) return;
+  const bulletLimit = getAdaptiveBulletLimit("circular", n);
 
   const width = 1300;
   const padding = 80;
@@ -1037,16 +1144,39 @@ function renderCircular(data) {
     svg.appendChild(label);
   }
 
-  const cardW = 250;
-  const cardH = 170;
+  const cardW = 290;
+  const baseCardH = 170;
   const centerX = width / 2;
   const outerR = 260;
   const nodeOrbitR = outerR - 6;
-  const cardOrbitR = outerR + Math.min(250, Math.max(170, n * 16));
+  const cardOrbitR = outerR + Math.min(310, Math.max(220, n * 20));
+
+  const estimatedCardHeights = stages.map((stage, i) => {
+    const durationText = getStageDurationText(stage);
+    const detailBullets = getStageSummaryBullets(stage, bulletLimit);
+    const durationHeight = durationText ? estimateWrappedTextHeight({
+      svg,
+      text: `Duration: ${durationText}`,
+      maxWidthPx: cardW - 18,
+      fontSize: 10.5,
+      lineHeight: 12,
+      maxLines: 2,
+      fontWeight: "bold"
+    }) : 0;
+    const bulletHeight = estimateBulletHeight({
+      svg,
+      maxWidthPx: cardW - 18,
+      bullets: detailBullets,
+      fontSize: 10,
+      lineHeight: 12
+    });
+    return Math.max(baseCardH, 48 + durationHeight + (durationText ? 4 : 0) + bulletHeight + 18);
+  });
+  const maxCardH = estimatedCardHeights.reduce((max, h) => Math.max(max, h), baseCardH);
 
   const sectionGap = 56;
   const safeTopY = monthBandY + finalMonthBandH + sectionGap;
-  const minCenterYForCards = safeTopY + cardOrbitR + (cardH / 2);
+  const minCenterYForCards = safeTopY + cardOrbitR + (maxCardH / 2);
   const centerY = Math.max(monthBandY + finalMonthBandH + 390, minCenterYForCards);
 
   const ringBackdrop = document.createElementNS(SVG_NS, "circle");
@@ -1232,6 +1362,7 @@ function renderCircular(data) {
     svg.appendChild(nodeLabel);
 
     const rawCardX = centerX + Math.cos(angle) * cardOrbitR - cardW / 2;
+    const cardH = estimatedCardHeights[i];
     const rawCardY = centerY + Math.sin(angle) * cardOrbitR - cardH / 2;
     const cardX = clamp(rawCardX, 20, width - cardW - 20);
     const cardY = rawCardY;
@@ -1269,9 +1400,22 @@ function renderCircular(data) {
     cardHead.setAttribute("fill", color);
     svg.appendChild(cardHead);
 
+    const headerClipId = `circular-card-head-${i}`;
+    const bodyClipId = `circular-card-body-${i}`;
+    const headerClip = makeClipPathRect(svg, headerClipId, cardX + 8, cardY + 4, cardW - 16, 26, 8);
+    const bodyClip = makeClipPathRect(svg, bodyClipId, cardX + 8, cardY + 38, cardW - 16, cardH - 48, 8);
+
+    const headerTextGroup = document.createElementNS(SVG_NS, "g");
+    headerTextGroup.setAttribute("clip-path", headerClip);
+    svg.appendChild(headerTextGroup);
+
+    const bodyTextGroup = document.createElementNS(SVG_NS, "g");
+    bodyTextGroup.setAttribute("clip-path", bodyClip);
+    svg.appendChild(bodyTextGroup);
+
     addWrappedTextLines({
       svg,
-      parentG: svg,
+      parentG: headerTextGroup,
       text: stage.title || `Stage ${i + 1}`,
       x: cardX + 10,
       y: cardY + 18,
@@ -1289,7 +1433,7 @@ function renderCircular(data) {
     if (durationText) {
       const used = addWrappedTextLines({
         svg,
-        parentG: svg,
+        parentG: bodyTextGroup,
         text: `Duration: ${durationText}`,
         x: cardX + 10,
         y: infoY,
@@ -1303,11 +1447,11 @@ function renderCircular(data) {
       infoY += Math.max(13, used);
     }
 
-    const detailBullets = getStageSummaryBullets(stage, 2);
+    const detailBullets = getStageSummaryBullets(stage, bulletLimit);
 
     addWrappedBullets({
       svg,
-      parentG: svg,
+      parentG: bodyTextGroup,
       x: cardX + 10,
       y: infoY - 12,
       maxWidthPx: cardW - 18,
@@ -1639,46 +1783,44 @@ document.getElementById("exportPptxBtn")?.addEventListener("click", () => {
   });
 });
 
-document.getElementById("uploadExcelFullBtn")?.addEventListener("click", () => {
-  const excelFile = document.getElementById("excelInput")?.files?.[0];
-  if (!excelFile) return alert("Choose an Excel (.xlsx) workbook first.");
+function applyUploadedDataset(data) {
+  fullDataset = normalizeDataset(data);
+  populateSpeciesSelect(fullDataset);
+  const sp = getCurrentSpeciesObj();
+  if (sp) renderSelectedTemplate(speciesToRenderData(sp));
+
+  const jsonInput = document.getElementById("jsonInput");
+  if (jsonInput) jsonInput.value = JSON.stringify(data, null, 2);
+}
+
+document.getElementById("uploadExcelMultiBtn")?.addEventListener("click", () => {
+  const excelFiles = Array.from(document.getElementById("excelMultiInput")?.files || []);
+  if (!excelFiles.length) return alert("Choose one or more Excel (.xlsx) worksheets first.");
 
   const formData = new FormData();
-  formData.append("file", excelFile);
+  excelFiles.forEach(file => formData.append("files", file));
 
-  fetch("/upload_excel_full", { method: "POST", body: formData })
+  fetch("/upload_excel_multi", { method: "POST", body: formData })
     .then(r => r.json())
     .then(data => {
       if (data.error) return alert("Error: " + data.error);
-
-      fullDataset = normalizeDataset(data);
-      populateSpeciesSelect(fullDataset);
-      renderCurrentSpeciesWithAI({ force: true });
-
-      const jsonInput = document.getElementById("jsonInput");
-      if (jsonInput) jsonInput.value = JSON.stringify(data, null, 2);
+      applyUploadedDataset(data);
     })
     .catch(err => alert("Upload failed: " + err));
 });
 
-document.getElementById("uploadExcelSimpleBtn")?.addEventListener("click", () => {
-  const excelFile = document.getElementById("excelInput")?.files?.[0];
-  if (!excelFile) return alert("Choose an Excel (.xlsx) template first.");
+document.getElementById("uploadExcelSingleBtn")?.addEventListener("click", () => {
+  const excelFile = document.getElementById("excelSingleInput")?.files?.[0];
+  if (!excelFile) return alert("Choose an Excel (.xlsx) worksheet first.");
 
   const formData = new FormData();
   formData.append("file", excelFile);
 
-  fetch("/upload_excel_simple", { method: "POST", body: formData })
+  fetch("/upload_excel_single", { method: "POST", body: formData })
     .then(r => r.json())
     .then(data => {
       if (data.error) return alert("Error: " + data.error);
-
-      fullDataset = normalizeDataset(data);
-      populateSpeciesSelect(fullDataset);
-      renderCurrentSpeciesWithAI({ force: true });
-
-      const jsonInput = document.getElementById("jsonInput");
-      if (jsonInput) jsonInput.value = JSON.stringify(data, null, 2);
+      applyUploadedDataset(data);
     })
     .catch(err => alert("Upload failed: " + err));
 });

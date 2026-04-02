@@ -49,13 +49,21 @@
 
       <div class="control-group">
         <label>
-          Excel (.xlsx)
-          <input id="excelInput" type="file" accept=".xlsx" />
+          Excel worksheets (.xlsx, multiple)
+          <input id="excelMultiInput" type="file" accept=".xlsx" multiple />
         </label>
 
         <div class="button-row">
-          <button id="uploadExcelFullBtn" class="secondary">Upload Workbook (Full)</button>
-          <button id="uploadExcelSimpleBtn" class="secondary">Upload Template (Simple)</button>
+          <button id="uploadExcelMultiBtn" class="secondary">Upload Worksheets (Multiple)</button>
+        </div>
+
+        <label>
+          Excel worksheet (.xlsx)
+          <input id="excelSingleInput" type="file" accept=".xlsx" />
+        </label>
+
+        <div class="button-row">
+          <button id="uploadExcelSingleBtn" class="secondary">Upload Worksheet (Single)</button>
         </div>
       </div>
 
@@ -82,6 +90,5 @@
   <script src="/static/js/app.js"></script>
 </body>
 </html>
-
 
 

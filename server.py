@@ -93,21 +93,40 @@ def _range_text_from_values(values, suffix=""):
     return f"{uniq[0]}-{uniq[-1]}{suffix}".strip()
 
 
-def _structured_life_history_workbook_to_species_list(sheets):
+def _sheet_name_matches(sheet_name: str, *needles: str) -> bool:
+    normalized = _normalize_col(sheet_name)
+    return any(needle in normalized for needle in needles)
+
+
+def _sheet_cell(df, row_idx, col_idx):
+    if row_idx >= len(df.index) or col_idx >= len(df.columns):
+        return ""
+    return _clean_cell(df.iat[row_idx, col_idx])
+
+
+def _coalesce_label_value(items, max_items=4):
+    cleaned = []
+    for label, value in items:
+        label_text = _clean_cell(label)
+        value_text = _clean_cell(value)
+        if not label_text or not value_text:
+            continue
+        cleaned.append(f"{label_text}: {value_text}")
+    return cleaned[:max_items]
+
+
+def _structured_life_history_workbook_to_species_list(raw_sheets):
     """
-    Parse the multi-sheet workbook format used by the attached example workbook.
-    Expected sheets include:
-      - Life History Stages
-      - Habitat
-      - Life Span
-      - Resource Needs
+    Parse the worksheet format used in the attached RISE examples.
+    Works when the user uploads either:
+    - several worksheet files that together form one species workbook, or
+    - a single life-history worksheet file.
     """
-    required_sheet = None
-    for name in sheets:
-        if _normalize_col(name) == "life history stages":
-            required_sheet = name
-            break
-    if not required_sheet:
+    stage_sheet_name = next(
+        (name for name in raw_sheets if _sheet_name_matches(name, "life history stages", "lifestages")),
+        None
+    )
+    if not stage_sheet_name:
         return None
 
     species_map = {}
@@ -145,99 +164,111 @@ def _structured_life_history_workbook_to_species_list(sheets):
             "bullets": []
         })
 
-    stage_df = sheets[required_sheet]
-    stage_cols = {_normalize_col(c): c for c in stage_df.columns}
-
-    sci_col = stage_cols.get("species scientific name")
-    common_col = stage_cols.get("species common name")
-    pop_col = stage_cols.get("population (if appropriate)")
-    life_stage_col = stage_cols.get("lifestage")
-    duration_metric_col = stage_cols.get("metric")
-    duration_value_col = stage_cols.get("value")
-    timing_metric_col = stage_df.columns[9] if len(stage_df.columns) > 9 else None
-    timing_value_col = stage_df.columns[10] if len(stage_df.columns) > 10 else None
-    repro_strategy_col = stage_cols.get("reproductive strategy")
-
-    for _, row in stage_df.iterrows():
+    stage_df = raw_sheets[stage_sheet_name]
+    for row_idx in range(2, len(stage_df.index)):
         species_entry = get_species_entry(
-            row.get(sci_col),
-            row.get(common_col) if common_col else "",
-            row.get(pop_col) if pop_col else ""
+            _sheet_cell(stage_df, row_idx, 0),
+            _sheet_cell(stage_df, row_idx, 1),
+            _sheet_cell(stage_df, row_idx, 2)
         )
-        stage_entry = get_stage_entry(species_entry, row.get(life_stage_col) if life_stage_col else "")
+        stage_entry = get_stage_entry(species_entry, _sheet_cell(stage_df, row_idx, 3))
         if not stage_entry:
             continue
 
-        metric = _clean_cell(row.get(duration_metric_col)) if duration_metric_col else ""
-        value = _clean_cell(row.get(duration_value_col)) if duration_value_col else ""
-        if metric and value:
-            stage_entry["duration_units"].append(metric)
-            stage_entry["duration_values"].append(value)
+        duration_metric = _sheet_cell(stage_df, row_idx, 6)
+        duration_value = _sheet_cell(stage_df, row_idx, 7)
+        if duration_metric and duration_value:
+            stage_entry["duration_units"].append(duration_metric)
+            stage_entry["duration_values"].append(duration_value)
 
-        timing_metric = _clean_cell(row.get(timing_metric_col)) if timing_metric_col else ""
-        timing_value = row.get(timing_value_col) if timing_value_col else None
-        if timing_metric and not pd.isna(timing_value):
+        timing_value = _sheet_cell(stage_df, row_idx, 10)
+        if timing_value:
             stage_entry["timing_months"].append(_excelish_month(timing_value))
 
-        repro_strategy = _clean_cell(row.get(repro_strategy_col)) if repro_strategy_col else ""
+        reproductive_age_value = _sheet_cell(stage_df, row_idx, 16)
+        reproductive_age_metric = _sheet_cell(stage_df, row_idx, 15)
+        if reproductive_age_value:
+            suffix = f" {reproductive_age_metric}".strip()
+            stage_entry["bullets"].append(f"Reproduction age: {reproductive_age_value}{suffix}")
+
+        reproductive_frequency_value = _sheet_cell(stage_df, row_idx, 19)
+        reproductive_frequency_metric = _sheet_cell(stage_df, row_idx, 18)
+        if reproductive_frequency_value:
+            suffix = f" {reproductive_frequency_metric}".strip()
+            stage_entry["bullets"].append(f"Reproductive frequency: {reproductive_frequency_value}{suffix}")
+
+        initial_count_value = _sheet_cell(stage_df, row_idx, 22)
+        initial_count_metric = _sheet_cell(stage_df, row_idx, 21)
+        if initial_count_value:
+            suffix = f" {initial_count_metric}".strip()
+            stage_entry["bullets"].append(f"Initial count: {initial_count_value}{suffix}")
+
+        repro_strategy = _sheet_cell(stage_df, row_idx, 23)
         if repro_strategy:
             stage_entry["bullets"].append(f"Reproduction: {repro_strategy}")
 
-    habitat_sheet = next((sheets[name] for name in sheets if _normalize_col(name) == "habitat"), None)
-    if habitat_sheet is not None and not habitat_sheet.empty:
-        habitat_cols = list(habitat_sheet.columns)
-        sci_col = habitat_cols[0] if len(habitat_cols) > 0 else None
-        common_col = habitat_cols[1] if len(habitat_cols) > 1 else None
-        pop_col = habitat_cols[2] if len(habitat_cols) > 2 else None
-        stage_col = habitat_cols[3] if len(habitat_cols) > 3 else None
-        habitat_names = habitat_cols[4:]
+    habitat_sheet_name = next((name for name in raw_sheets if _sheet_name_matches(name, "habitat")), None)
+    if habitat_sheet_name:
+        habitat_df = raw_sheets[habitat_sheet_name]
+        habitat_names = [_sheet_cell(habitat_df, 1, col_idx) for col_idx in range(4, len(habitat_df.columns))]
 
-        for _, row in habitat_sheet.iterrows():
-            species_entry = get_species_entry(row.get(sci_col), row.get(common_col), row.get(pop_col))
-            stage_entry = get_stage_entry(species_entry, row.get(stage_col))
-            if not stage_entry:
-                continue
-            active = [str(h).strip() for h in habitat_names if _clean_cell(row.get(h)).lower() in ("x", "yes", "true", "1")]
-            if active:
-                stage_entry["bullets"].append(f"Habitat: {', '.join(active)}")
-
-    resource_sheet = next((sheets[name] for name in sheets if _normalize_col(name) == "resource needs"), None)
-    if resource_sheet is not None and not resource_sheet.empty:
-        resource_cols = list(resource_sheet.columns)
-        sci_col = resource_cols[0] if len(resource_cols) > 0 else None
-        common_col = resource_cols[1] if len(resource_cols) > 1 else None
-        pop_col = resource_cols[2] if len(resource_cols) > 2 else None
-        stage_col = resource_cols[3] if len(resource_cols) > 3 else None
-        need_names = resource_cols[4:]
-
-        for _, row in resource_sheet.iterrows():
-            species_entry = get_species_entry(row.get(sci_col), row.get(common_col), row.get(pop_col))
-            stage_entry = get_stage_entry(species_entry, row.get(stage_col))
+        for row_idx in range(2, len(habitat_df.index)):
+            species_entry = get_species_entry(
+                _sheet_cell(habitat_df, row_idx, 0),
+                _sheet_cell(habitat_df, row_idx, 1),
+                _sheet_cell(habitat_df, row_idx, 2)
+            )
+            stage_entry = get_stage_entry(species_entry, _sheet_cell(habitat_df, row_idx, 3))
             if not stage_entry:
                 continue
 
             active = []
-            for need in need_names:
-                use = _clean_cell(row.get(need))
-                if use:
-                    active.append(f"{need}: {use}")
+            for offset, habitat_name in enumerate(habitat_names, start=4):
+                marker = _sheet_cell(habitat_df, row_idx, offset).lower()
+                if marker in ("x", "yes", "true", "1"):
+                    active.append(habitat_name)
             if active:
-                stage_entry["bullets"].append(f"Resource needs: {'; '.join(active[:4])}")
+                stage_entry["bullets"].append(f"Habitat: {', '.join(active)}")
 
-    lifespan_sheet = next((sheets[name] for name in sheets if _normalize_col(name) == "life span"), None)
-    if lifespan_sheet is not None and not lifespan_sheet.empty:
-        life_cols = {_normalize_col(c): c for c in lifespan_sheet.columns}
-        sci_col = life_cols.get("species scientific name")
-        common_col = life_cols.get("species common name")
-        metric_col = life_cols.get("life span metric")
-        value_col = life_cols.get("life span value")
+    resource_sheet_name = next((name for name in raw_sheets if _sheet_name_matches(name, "resource needs")), None)
+    if resource_sheet_name:
+        resource_df = raw_sheets[resource_sheet_name]
+        need_names = [_sheet_cell(resource_df, 1, col_idx) for col_idx in range(4, len(resource_df.columns))]
 
-        for _, row in lifespan_sheet.iterrows():
-            species_entry = get_species_entry(row.get(sci_col), row.get(common_col) if common_col else "", "")
+        for row_idx in range(2, len(resource_df.index)):
+            species_entry = get_species_entry(
+                _sheet_cell(resource_df, row_idx, 0),
+                _sheet_cell(resource_df, row_idx, 1),
+                _sheet_cell(resource_df, row_idx, 2)
+            )
+            stage_entry = get_stage_entry(species_entry, _sheet_cell(resource_df, row_idx, 3))
+            if not stage_entry:
+                continue
+
+            resource_pairs = []
+            for offset, need_name in enumerate(need_names, start=4):
+                resource_value = _sheet_cell(resource_df, row_idx, offset)
+                if resource_value:
+                    resource_pairs.append((need_name, resource_value))
+            if resource_pairs:
+                stage_entry["bullets"].append(
+                    f"Resource needs: {'; '.join(_coalesce_label_value(resource_pairs, 4))}"
+                )
+
+    lifespan_sheet_name = next((name for name in raw_sheets if _sheet_name_matches(name, "life span", "lifespan")), None)
+    if lifespan_sheet_name:
+        lifespan_df = raw_sheets[lifespan_sheet_name]
+        for row_idx in range(1, len(lifespan_df.index)):
+            species_entry = get_species_entry(
+                _sheet_cell(lifespan_df, row_idx, 0),
+                _sheet_cell(lifespan_df, row_idx, 1),
+                ""
+            )
             if not species_entry:
                 continue
-            metric = _clean_cell(row.get(metric_col)) if metric_col else ""
-            value = _clean_cell(row.get(value_col)) if value_col else ""
+
+            metric = _sheet_cell(lifespan_df, row_idx, 4)
+            value = _sheet_cell(lifespan_df, row_idx, 5)
             if metric and value:
                 species_entry["lifespan"].append((metric, value))
 
@@ -246,12 +277,12 @@ def _structured_life_history_workbook_to_species_list(sheets):
         title_base = info["commonName"] or info["name"]
         title = f"{title_base} - Life history"
         if info["population"]:
-          title = f"{title_base} ({info['population']}) - Life history"
+            title = f"{title_base} ({info['population']}) - Life history"
 
         lifespan_text = ""
-        lifespan_values = [val for metric, val in info["lifespan"] if "year" in metric.lower()]
-        if lifespan_values:
-            lifespan_text = _range_text_from_values(lifespan_values, " years")
+        lifespan_years = [val for metric, val in info["lifespan"] if "year" in metric.lower()]
+        if lifespan_years:
+            lifespan_text = _range_text_from_values(lifespan_years, " years")
         elif info["lifespan"]:
             lifespan_text = _range_text_from_values([val for _, val in info["lifespan"]])
 
@@ -259,10 +290,8 @@ def _structured_life_history_workbook_to_species_list(sheets):
         for st in info["stages"].values():
             bullets = []
 
-            duration_suffix = ""
-            if st["duration_units"]:
-                duration_suffix = f" {st['duration_units'][0]}"
-            duration_text = _range_text_from_values(st["duration_values"], duration_suffix)
+            unit_suffix = f" {st['duration_units'][0]}" if st["duration_units"] else ""
+            duration_text = _range_text_from_values(st["duration_values"], unit_suffix)
             if duration_text:
                 bullets.append(f"Duration: {duration_text}")
 
@@ -287,7 +316,192 @@ def _structured_life_history_workbook_to_species_list(sheets):
             "stages": stages_out
         })
 
+    return species_out or None
+
+
+def _generic_workbook_to_species_list(sheets):
+    species_dict = {}
+
+    for _, df in sheets.items():
+        if df is None or df.empty:
+            continue
+
+        normalized_cols = {_normalize_col(c): c for c in df.columns}
+
+        species_col = None
+        for key, orig in normalized_cols.items():
+            if 'species' in key:
+                species_col = orig
+                break
+        if not species_col:
+            continue
+
+        stage_col = None
+        for key, orig in normalized_cols.items():
+            if 'stage' in key or 'lifestage' in key or 'life stage' in key:
+                stage_col = orig
+                break
+
+        for _, row in df.iterrows():
+            _add_bullets_from_row(df, row, species_dict, species_col, stage_col)
+
+    if not species_dict:
+        return None
+
+    species_list = []
+    for info in species_dict.values():
+        stages = []
+
+        for st in info["stages"].values():
+            bullets = []
+            seen = set()
+            for bullet in st["bullets"]:
+                if bullet not in seen:
+                    bullets.append(bullet)
+                    seen.add(bullet)
+            stages.append({"title": st["name"], "bullets": bullets})
+
+        if info["speciesBullets"]:
+            stages.insert(0, {
+                "title": "Species summary",
+                "bullets": list(dict.fromkeys(info["speciesBullets"]))
+            })
+
+        species_list.append({
+            "name": info["name"],
+            "title": f"{info['name']} - Life history",
+            "imageFile": info.get("imageFile"),
+            "imageUrl": info.get("imageUrl"),
+            "stages": stages
+        })
+
+    return species_list
+
+
+def _simple_template_sheet_to_species_list(df):
+    if df is None or df.empty:
+        return None
+
+    cols_norm = {_normalize_col(c): c for c in df.columns}
+
+    def col(*names):
+        for n in names:
+            key = _normalize_col(n)
+            if key in cols_norm:
+                return cols_norm[key]
+        return None
+
+    species_col = col('Species')
+    stage_col = col('StageName', 'Stage', 'Life stage', 'Lifestage')
+    order_col = col('StageOrder', 'Order')
+    common_col = col('CommonName', 'Common name')
+    image_file_col = col('ImageFile', 'Image', 'Photo')
+    image_url_col = col('ImageUrl', 'Image URL', 'PhotoUrl', 'Photo URL')
+
+    if not species_col or not stage_col:
+        return None
+
+    detail_candidates = [
+        'Duration', 'Timing', 'Habitat', 'Lifespan', 'Movement',
+        'Physical', 'Reproduction', 'Food', 'Notes'
+    ]
+    detail_cols = [col(c) for c in detail_candidates if col(c)]
+
+    species_map = {}
+
+    for _, row in df.iterrows():
+        raw_species = row[species_col]
+        if pd.isna(raw_species):
+            continue
+        s_name = str(raw_species).strip()
+        if not s_name or s_name.lower() == 'nan':
+            continue
+
+        s_key = s_name.lower()
+        sp = species_map.setdefault(
+            s_key,
+            {
+                "name": s_name,
+                "commonName": None,
+                "imageFile": None,
+                "imageUrl": None,
+                "stages": {}
+            }
+        )
+
+        if common_col and not pd.isna(row[common_col]):
+            sp["commonName"] = str(row[common_col]).strip()
+        if image_file_col and not pd.isna(row[image_file_col]):
+            sp["imageFile"] = str(row[image_file_col]).strip()
+        if image_url_col and not pd.isna(row[image_url_col]):
+            sp["imageUrl"] = str(row[image_url_col]).strip()
+
+        raw_stage = row[stage_col]
+        if pd.isna(raw_stage):
+            continue
+        stage_name = str(raw_stage).strip()
+        if not stage_name or stage_name.lower() == 'nan':
+            continue
+
+        order = None
+        if order_col and not pd.isna(row[order_col]):
+            try:
+                order = float(row[order_col])
+            except Exception:
+                order = None
+
+        st_key = stage_name.lower()
+        stage = sp["stages"].setdefault(
+            st_key,
+            {"name": stage_name, "order": order, "bullets": []}
+        )
+
+        for detail_col in detail_cols:
+            val = row[detail_col]
+            if pd.isna(val):
+                continue
+            text = str(val).strip()
+            if not text or text.lower() == 'nan':
+                continue
+            stage["bullets"].append(f"{_pretty_label(detail_col)}: {text}")
+
+    if not species_map:
+        return None
+
+    species_out = []
+    for sp in species_map.values():
+        stages = list(sp["stages"].values())
+        stages.sort(key=lambda st: (9999 if st["order"] is None else st["order"]))
+        species_out.append({
+            "name": sp["name"],
+            "title": f"{sp['name']} - Life history",
+            "imageFile": sp["imageFile"],
+            "imageUrl": sp["imageUrl"],
+            "stages": [{"title": st["name"], "bullets": st["bullets"]} for st in stages]
+        })
+
     return species_out
+
+
+def _read_excel_sheets_from_bytes(file_bytes, header=0):
+    return pd.read_excel(BytesIO(file_bytes), sheet_name=None, header=header)
+
+
+def _merge_sheet_maps(sheet_maps):
+    merged = {}
+    for sheets in sheet_maps:
+        for name, df in sheets.items():
+            unique_name = name
+            suffix = 2
+            while unique_name in merged:
+                unique_name = f"{name} ({suffix})"
+                suffix += 1
+            merged[unique_name] = df
+    return merged
+
+
+def _dataset_response(title, species_list):
+    return {"title": title, "species": species_list}
 
 
 def _add_bullets_from_row(df, row, species_dict, species_col, stage_col=None):
@@ -421,242 +635,70 @@ def generate_pptx():
     )
 
 
-# ---------- FULL WORKBOOK UPLOAD ----------
+# ---------- WORKSHEET UPLOADS ----------
 
-@app.route('/upload_excel_full', methods=['POST'])
-def upload_excel_full():
-    """
-    Generic multi-sheet workbook reader.
+@app.route('/upload_excel_multi', methods=['POST'])
+def upload_excel_multi():
+    files = request.files.getlist('files')
+    if not files:
+        return jsonify({"error": "No worksheet files uploaded"}), 400
 
-    - Any sheet that has a 'species' column (case-insensitive) is used.
-    - If it has a 'stage' / 'lifestage' column, rows are grouped by stage.
-    - Every other non-empty cell becomes a bullet "Label: value".
-    - Species and stages are merged case-insensitively.
-    """
+    try:
+        raw_sheet_maps = []
+        standard_sheet_maps = []
+
+        for file in files:
+            file_bytes = file.read()
+            if not file_bytes:
+                continue
+            raw_sheet_maps.append(_read_excel_sheets_from_bytes(file_bytes, header=None))
+            standard_sheet_maps.append(_read_excel_sheets_from_bytes(file_bytes, header=0))
+    except Exception as e:
+        return jsonify({"error": f"Could not read Excel files: {e}"}), 400
+
+    if not raw_sheet_maps:
+        return jsonify({"error": "Uploaded worksheet files were empty"}), 400
+
+    merged_raw_sheets = _merge_sheet_maps(raw_sheet_maps)
+    merged_standard_sheets = _merge_sheet_maps(standard_sheet_maps)
+
+    species_list = _structured_life_history_workbook_to_species_list(merged_raw_sheets)
+    if not species_list:
+        species_list = _generic_workbook_to_species_list(merged_standard_sheets)
+
+    if not species_list:
+        return jsonify({"error": "Could not extract species and stage data from the uploaded worksheets"}), 400
+
+    return jsonify(_dataset_response("Life History Worksheets", species_list))
+
+
+@app.route('/upload_excel_single', methods=['POST'])
+def upload_excel_single():
     if 'file' not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
+        return jsonify({"error": "No worksheet file uploaded"}), 400
 
     file = request.files['file']
 
     try:
-        sheets = pd.read_excel(file, sheet_name=None)
+        file_bytes = file.read()
+        if not file_bytes:
+            return jsonify({"error": "Uploaded worksheet file was empty"}), 400
+        raw_sheets = _read_excel_sheets_from_bytes(file_bytes, header=None)
+        standard_sheets = _read_excel_sheets_from_bytes(file_bytes, header=0)
     except Exception as e:
         return jsonify({"error": f"Could not read Excel file: {e}"}), 400
 
-    if not sheets:
-        return jsonify({"error": "Excel workbook has no sheets"}), 400
+    species_list = _structured_life_history_workbook_to_species_list(raw_sheets)
+    if not species_list:
+        first_sheet = next(iter(standard_sheets.values()), None)
+        species_list = _simple_template_sheet_to_species_list(first_sheet)
+    if not species_list:
+        species_list = _generic_workbook_to_species_list(standard_sheets)
 
-    species_dict = {}
+    if not species_list:
+        return jsonify({"error": "Could not extract a life-history diagram from this worksheet"}), 400
 
-    for sheet_name, df in sheets.items():
-        if df is None or df.empty:
-            continue
-
-        normalized_cols = {_normalize_col(c): c for c in df.columns}
-
-        species_col = None
-        for key, orig in normalized_cols.items():
-            if 'species' in key:
-                species_col = orig
-                break
-        if not species_col:
-            continue
-
-        stage_col = None
-        for key, orig in normalized_cols.items():
-            if 'stage' in key or 'lifestage' in key or 'life stage' in key:
-                stage_col = orig
-                break
-
-        for _, row in df.iterrows():
-            _add_bullets_from_row(df, row, species_dict, species_col, stage_col)
-
-    if not species_dict:
-        return jsonify({"error": "No species rows found in workbook"}), 400
-
-    species_list = []
-    for s_key, info in species_dict.items():
-        stages = []
-
-        for st_key, st in info["stages"].items():
-            seen = set()
-            bullets = []
-            for b in st["bullets"]:
-                if b not in seen:
-                    bullets.append(b)
-                    seen.add(b)
-            stages.append({"title": st["name"], "bullets": bullets})
-
-        if info["speciesBullets"]:
-            stages.insert(0, {
-                "title": "Species summary",
-                "bullets": list(dict.fromkeys(info["speciesBullets"]))
-            })
-
-        species_list.append({
-            "name": info["name"],
-            "title": f"{info['name']} – Life history",
-            "imageFile": info.get("imageFile"),
-            "imageUrl": info.get("imageUrl"),
-            "stages": stages
-        })
-
-    return jsonify({
-        "title": "Life History Workbook",
-        "species": species_list
-    })
-
-
-# ---------- SIMPLE TEMPLATE UPLOAD ----------
-
-@app.route('/upload_excel_simple', methods=['POST'])
-def upload_excel_simple():
-    """
-    Simple one-sheet template.
-
-    Expected columns (case-insensitive):
-
-      Species
-      CommonName      (optional)
-      ImageUrl        (optional)
-      ImageFile       (optional)
-      StageName
-      StageOrder      (optional)
-      Duration
-      Timing
-      Habitat
-      Lifespan
-      Movement
-      Physical
-      Reproduction
-      Food
-      Notes           (optional)
-
-    One row per life stage.
-    """
-    if 'file' not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
-
-    file = request.files['file']
-
-    try:
-        df = pd.read_excel(file)
-    except Exception as e:
-        return jsonify({"error": f"Could not read Excel file: {e}"}), 400
-
-    if df.empty:
-        return jsonify({"error": "Template sheet is empty"}), 400
-
-    cols_norm = {_normalize_col(c): c for c in df.columns}
-
-    def col(*names):
-        for n in names:
-            key = _normalize_col(n)
-            if key in cols_norm:
-                return cols_norm[key]
-        return None
-
-    species_col = col('Species')
-    stage_col = col('StageName', 'Stage', 'Life stage', 'Lifestage')
-    order_col = col('StageOrder', 'Order')
-    common_col = col('CommonName', 'Common name')
-    image_file_col = col('ImageFile', 'Image', 'Photo')
-    image_url_col = col('ImageUrl', 'Image URL', 'PhotoUrl', 'Photo URL')
-
-    if not species_col or not stage_col:
-        return jsonify({"error": "Template must contain Species and StageName columns"}), 400
-
-    detail_candidates = [
-        'Duration', 'Timing', 'Habitat', 'Lifespan', 'Movement',
-        'Physical', 'Reproduction', 'Food', 'Notes'
-    ]
-    detail_cols = [col(c) for c in detail_candidates if col(c)]
-
-    species_map = {}
-
-    for _, row in df.iterrows():
-        raw_species = row[species_col]
-        if pd.isna(raw_species):
-            continue
-        s_name = str(raw_species).strip()
-        if not s_name or s_name.lower() == 'nan':
-            continue
-
-        s_key = s_name.lower()
-
-        sp = species_map.setdefault(
-            s_key,
-            {
-                "key": s_key,
-                "name": s_name,
-                "commonName": None,
-                "imageFile": None,
-                "imageUrl": None,
-                "stages": {}
-            }
-        )
-
-        if common_col and not pd.isna(row[common_col]):
-            sp["commonName"] = str(row[common_col]).strip()
-        if image_file_col and not pd.isna(row[image_file_col]):
-            sp["imageFile"] = str(row[image_file_col]).strip()
-        if image_url_col and not pd.isna(row[image_url_col]):
-            sp["imageUrl"] = str(row[image_url_col]).strip()
-
-        raw_stage = row[stage_col]
-        if pd.isna(raw_stage):
-            continue
-        stage_name = str(raw_stage).strip()
-        if not stage_name or stage_name.lower() == 'nan':
-            continue
-
-        st_key = stage_name.lower()
-
-        order = None
-        if order_col and not pd.isna(row[order_col]):
-            try:
-                order = float(row[order_col])
-            except Exception:
-                order = None
-
-        stage = sp["stages"].setdefault(
-            st_key,
-            {
-                "key": st_key,
-                "name": stage_name,
-                "order": order,
-                "bullets": []
-            }
-        )
-
-        for c in detail_cols:
-            val = row[c]
-            if pd.isna(val):
-                continue
-            text = str(val).strip()
-            if not text or text.lower() == 'nan':
-                continue
-            label = _pretty_label(c)
-            stage["bullets"].append(f"{label}: {text}")
-
-    species_out = []
-    for s_key, sp in species_map.items():
-        stages = list(sp["stages"].values())
-        stages.sort(key=lambda st: (9999 if st["order"] is None else st["order"]))
-        stages_out = [{"title": st["name"], "bullets": st["bullets"]} for st in stages]
-
-        species_out.append({
-            "name": sp["name"],
-            "title": f"{sp['name']} – Life history",
-            "imageFile": sp["imageFile"],
-            "imageUrl": sp["imageUrl"],
-            "stages": stages_out
-        })
-
-    return jsonify({
-        "title": "LifeViz Template",
-        "species": species_out
-    })
+    return jsonify(_dataset_response("Life History Worksheet", species_list))
 
 
 # ---------- AI ENHANCEMENT ROUTE ----------
