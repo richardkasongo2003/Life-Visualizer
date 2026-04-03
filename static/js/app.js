@@ -1198,7 +1198,7 @@ function renderCircular(data) {
   mainRing.setAttribute("stroke-dasharray", "6 6");
   svg.appendChild(mainRing);
 
-  const durationPieOuterR = 124;
+  const durationPieOuterR = outerR - 18;
   const durationPieInnerR = 60;
 
   const toArcPoint = (cx, cy, r, deg) => {
