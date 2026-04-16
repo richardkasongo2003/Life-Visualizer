@@ -115,6 +115,58 @@ def _coalesce_label_value(items, max_items=4):
     return cleaned[:max_items]
 
 
+def _lifespan_unit_suffix(metric, value=""):
+    unit = _clean_cell(metric).lower()
+    value_text = _clean_cell(value)
+    singular = value_text in ("1", "1.0")
+    if "year" in unit:
+        return " year" if singular else " years"
+    if "month" in unit:
+        return " month" if singular else " months"
+    if "week" in unit:
+        return " week" if singular else " weeks"
+    if "day" in unit:
+        return " day" if singular else " days"
+    return f" {metric}".rstrip() if metric else ""
+
+
+def _select_lifespan_text(lifespan_rows):
+    """
+    Prefer one representative lifespan value, not a min/max range.
+    Priority: exact mean/average, average-range maximum, average-range minimum,
+    maximum, then the first usable row.
+    """
+    cleaned = []
+    for row in lifespan_rows:
+        if len(row) == 3:
+            metric, value, qualifier = row
+        else:
+            metric, value = row
+            qualifier = ""
+        metric = _clean_cell(metric)
+        value = _clean_cell(value)
+        qualifier = _clean_cell(qualifier)
+        if value:
+            cleaned.append((metric, value, qualifier))
+
+    if not cleaned:
+        return ""
+
+    def pick(predicate):
+        return next((row for row in cleaned if predicate(row[2].lower())), None)
+
+    selected = (
+        pick(lambda q: ("mean" in q or "average" in q) and "range" not in q and "min" not in q and "max" not in q)
+        or pick(lambda q: "average range" in q and "max" in q)
+        or pick(lambda q: "average range" in q and "min" in q)
+        or pick(lambda q: q.strip() == "maximum" or q.strip() == "max")
+        or cleaned[0]
+    )
+
+    metric, value, _ = selected
+    return f"{value}{_lifespan_unit_suffix(metric, value)}".strip()
+
+
 def _structured_life_history_workbook_to_species_list(raw_sheets):
     """
     Parse the worksheet format used in the attached RISE examples.
@@ -267,10 +319,11 @@ def _structured_life_history_workbook_to_species_list(raw_sheets):
             if not species_entry:
                 continue
 
+            qualifier = _sheet_cell(lifespan_df, row_idx, 3)
             metric = _sheet_cell(lifespan_df, row_idx, 4)
             value = _sheet_cell(lifespan_df, row_idx, 5)
             if metric and value:
-                species_entry["lifespan"].append((metric, value))
+                species_entry["lifespan"].append((metric, value, qualifier))
 
     species_out = []
     for info in species_map.values():
@@ -279,12 +332,7 @@ def _structured_life_history_workbook_to_species_list(raw_sheets):
         if info["population"]:
             title = f"{title_base} ({info['population']}) - Life history"
 
-        lifespan_text = ""
-        lifespan_years = [val for metric, val in info["lifespan"] if "year" in metric.lower()]
-        if lifespan_years:
-            lifespan_text = _range_text_from_values(lifespan_years, " years")
-        elif info["lifespan"]:
-            lifespan_text = _range_text_from_values([val for _, val in info["lifespan"]])
+        lifespan_text = _select_lifespan_text(info["lifespan"])
 
         stages_out = []
         for st in info["stages"].values():
@@ -313,6 +361,7 @@ def _structured_life_history_workbook_to_species_list(raw_sheets):
             "title": title,
             "imageFile": info["imageFile"],
             "imageUrl": info["imageUrl"],
+            "lifespan": lifespan_text,
             "stages": stages_out
         })
 

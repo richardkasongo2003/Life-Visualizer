@@ -330,6 +330,8 @@ function addWrappedTextLines({
 }
 
 function getSpeciesLifespanText(data) {
+  if (data?.lifespan) return safeText(data.lifespan);
+
   const stages = Array.isArray(data?.stages) ? data.stages : [];
 
   for (const stage of stages) {
@@ -476,7 +478,7 @@ function extractKeyFacts(stage) {
   if (habitat) chips.push({ icon: "🏞️", label: "Habitat", value: habitat });
   if (diet) chips.push({ icon: "🍽️", label: "Diet", value: diet });
   if (movement) chips.push({ icon: "🧭", label: "Movement", value: movement });
-  if (reproduction) chips.push({ icon: "🥚", label: "Repro", value: reproduction });
+  if (reproduction) chips.push({ icon: "🥚", label: "Reproductive strategy", value: reproduction });
   if (traits) chips.push({ icon: "🧬", label: "Traits", value: traits });
   if (threats) chips.push({ icon: "⚠️", label: "Threats", value: threats });
 
@@ -503,6 +505,156 @@ function getAdaptiveBulletLimit(template, stageCount) {
   if (stageCount <= 5) return 3;
   if (stageCount <= 8) return 2;
   return 1;
+}
+
+function inferLifeStageGroup(stageTitle) {
+  const title = String(stageTitle || "").toLowerCase();
+
+  if (/(egg|embryo|fertiliz|incubat|nest)/.test(title)) return "Early life";
+  if (/(larva|chick|fledg|juvenile|young|immature)/.test(title)) return "Juvenile";
+  if (/(adult|mature|breeding|reproduct)/.test(title)) return "Adult";
+
+  return "Other";
+}
+
+function getLifeStageGroups(stages) {
+  const groups = [];
+  let current = null;
+
+  stages.forEach((stage, i) => {
+    const label = stage.lifeStageGroup || stage.group || inferLifeStageGroup(stage.title);
+    if (!current || current.label !== label) {
+      current = {
+        label,
+        startIndex: i,
+        endIndex: i,
+        color: heatColor(i, stages.length)
+      };
+      groups.push(current);
+    } else {
+      current.endIndex = i;
+    }
+  });
+
+  return groups.filter(group => group.label && group.label !== "Other");
+}
+
+function isContainerStageTitle(title) {
+  return /^(nest|brood|early life|egg mass|larval period|larval stage|juvenile period|juvenile stage|adult|adult stage|reproductive adult|breeding adult|breeding season|reproductive period|spawning period)$/i.test(String(title || "").trim());
+}
+
+function childBelongsToContainer(containerLabel, childTitle) {
+  const label = String(containerLabel || "").toLowerCase();
+  const title = String(childTitle || "").toLowerCase();
+
+  if (label.includes("nest") || label.includes("brood")) {
+    return /(egg|chick|nestling|hatch|incubat)/.test(title);
+  }
+
+  if (label.includes("early") || label.includes("egg mass")) {
+    return /(egg|embryo|larva|larvae|chick|hatch|incubat|nestling)/.test(title);
+  }
+
+  if (label.includes("larval")) {
+    return /(larva|larvae|alevin|fry|tadpole|metamorph)/.test(title);
+  }
+
+  if (label.includes("juvenile")) {
+    return /(fledg|juvenile|young|immature|subadult|yearling|smolt|parr)/.test(title);
+  }
+
+  if (label.includes("adult") || label.includes("reproductive") || label.includes("breeding") || label.includes("spawning")) {
+    return /(adult|mature|breeding|reproduct|spawn|mate|nest|incubat|brood|migrat|forag|roost|dispers|shelter)/.test(title);
+  }
+
+  return true;
+}
+
+function stageHasDrawableSubstance(stage) {
+  return Boolean(getStageDurationText(stage) || getStageSummaryBullets(stage, 1).length);
+}
+
+function stageHasSpecificDetails(stage) {
+  const bullets = Array.isArray(stage?.bullets) ? stage.bullets.map(String) : [];
+  return bullets.some(b => !/^(duration|timing|seasonal timing|date range|range|lifespan|sources?)\s*:/i.test(b));
+}
+
+function cloneStageWithInheritedTiming(stage, containerStage) {
+  const child = {
+    ...stage,
+    bullets: Array.isArray(stage.bullets) ? [...stage.bullets] : []
+  };
+
+  const childTiming = getStageRangeText(child);
+  const containerTiming = getStageRangeText(containerStage);
+  if (!childTiming && containerTiming) {
+    child.bullets.push(`Timing: ${containerTiming}`);
+  }
+
+  return child;
+}
+
+function buildCircularStageModel(rawStages) {
+  const displayStages = [];
+  const containerGroups = [];
+  let activeContainer = null;
+
+  const closeActiveContainer = () => {
+    if (activeContainer && activeContainer.startIndex !== null && activeContainer.endIndex !== null) {
+      containerGroups.push({
+        label: activeContainer.label,
+        startIndex: activeContainer.startIndex,
+        endIndex: activeContainer.endIndex,
+        color: activeContainer.color
+      });
+    }
+    activeContainer = null;
+  };
+
+  (rawStages || []).forEach((stage, sourceIndex) => {
+    const title = stage.title || `Stage ${sourceIndex + 1}`;
+    const isEmptyContainer = isContainerStageTitle(title) && !stageHasSpecificDetails(stage);
+    const hasDrawableSubstance = stageHasDrawableSubstance(stage);
+
+    if (isEmptyContainer) {
+      closeActiveContainer();
+      activeContainer = {
+        label: title,
+        sourceStage: stage,
+        startIndex: null,
+        endIndex: null,
+        color: heatColor(sourceIndex, rawStages.length || 1)
+      };
+      return;
+    }
+
+    if (!hasDrawableSubstance) {
+      return;
+    }
+
+    if (activeContainer && !childBelongsToContainer(activeContainer.label, title)) {
+      closeActiveContainer();
+    }
+
+    const displayStage = activeContainer
+      ? cloneStageWithInheritedTiming(stage, activeContainer.sourceStage)
+      : stage;
+
+    displayStages.push(displayStage);
+
+    if (activeContainer) {
+      const displayIndex = displayStages.length - 1;
+      if (activeContainer.startIndex === null) activeContainer.startIndex = displayIndex;
+      activeContainer.endIndex = displayIndex;
+    }
+  });
+
+  closeActiveContainer();
+
+  return {
+    stages: displayStages.length ? displayStages : rawStages,
+    groups: containerGroups
+  };
 }
 
 function durationToDays(durationText) {
@@ -1010,7 +1162,8 @@ function renderTimeline(data) {
 }
 
 function renderCircular(data) {
-  const stages = data.stages || [];
+  const circularModel = buildCircularStageModel(data.stages || []);
+  const stages = circularModel.stages || [];
   const n = stages.length;
   if (!n) return;
   const bulletLimit = getAdaptiveBulletLimit("circular", n);
@@ -1149,7 +1302,7 @@ function renderCircular(data) {
   const centerX = width / 2;
   const outerR = 260;
   const nodeOrbitR = outerR - 6;
-  const cardOrbitR = outerR + Math.min(310, Math.max(220, n * 20));
+  const cardOrbitR = outerR + Math.min(360, Math.max(260, n * 22));
 
   const estimatedCardHeights = stages.map((stage, i) => {
     const durationText = getStageDurationText(stage);
@@ -1204,6 +1357,14 @@ function renderCircular(data) {
   const toArcPoint = (cx, cy, r, deg) => {
     const rad = deg * Math.PI / 180;
     return { x: cx + Math.cos(rad) * r, y: cy + Math.sin(rad) * r };
+  };
+
+  const arcPath = (cx, cy, r, startDeg, endDeg) => {
+    const start = toArcPoint(cx, cy, r, startDeg);
+    const end = toArcPoint(cx, cy, r, endDeg);
+    const delta = Math.abs(endDeg - startDeg);
+    const largeArc = delta > 180 ? "1" : "0";
+    return `M ${start.x} ${start.y} A ${r} ${r} 0 ${largeArc} 1 ${end.x} ${end.y}`;
   };
 
   const donutSlicePath = (cx, cy, outerRadius, innerRadius, startDeg, endDeg) => {
@@ -1288,6 +1449,39 @@ function renderCircular(data) {
       pieLabel.textContent = `${slice.stageNum}`;
       svg.appendChild(pieLabel);
     }
+  });
+
+  const groupArcR = outerR + 22;
+  const lifeStageGroups = circularModel.groups.length ? circularModel.groups : getLifeStageGroups(stages);
+  lifeStageGroups.forEach((group) => {
+    const firstSlice = pieSlices[group.startIndex];
+    const lastSlice = pieSlices[group.endIndex];
+    if (!firstSlice || !lastSlice) return;
+
+    const startDeg = firstSlice.startDeg;
+    const endDeg = lastSlice.endDeg;
+    const midDeg = (startDeg + endDeg) / 2;
+    const groupColor = group.color;
+
+    const groupArc = document.createElementNS(SVG_NS, "path");
+    groupArc.setAttribute("d", arcPath(centerX, centerY, groupArcR, startDeg, endDeg));
+    groupArc.setAttribute("fill", "none");
+    groupArc.setAttribute("stroke", groupColor);
+    groupArc.setAttribute("stroke-width", 11);
+    groupArc.setAttribute("stroke-linecap", "round");
+    groupArc.setAttribute("opacity", "0.5");
+    svg.appendChild(groupArc);
+
+    const labelPoint = toArcPoint(centerX, centerY, groupArcR + 22, midDeg);
+    const groupLabel = document.createElementNS(SVG_NS, "text");
+    groupLabel.setAttribute("x", labelPoint.x);
+    groupLabel.setAttribute("y", labelPoint.y);
+    groupLabel.setAttribute("text-anchor", "middle");
+    groupLabel.setAttribute("font-size", 12);
+    groupLabel.setAttribute("font-weight", "bold");
+    groupLabel.setAttribute("fill", "#334155");
+    groupLabel.textContent = group.label;
+    svg.appendChild(groupLabel);
   });
 
   const core = document.createElementNS(SVG_NS, "circle");
@@ -1548,7 +1742,8 @@ function speciesToRenderData(sp) {
     stages: sp.stages || [],
     imageFile: sp.imageFile || null,
     imageUrl: sp.imageUrl || null,
-    speciesName: sp.name || null
+    speciesName: sp.name || null,
+    lifespan: sp.lifespan || null
   };
 }
 
