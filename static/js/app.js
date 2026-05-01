@@ -684,9 +684,28 @@ function durationToDays(durationText) {
   return null;
 }
 
-function isAdultLikeStage(stage) {
-  const title = String(stage?.title || "").toLowerCase();
-  return /(adult|mature|breeding|reproduct|spawning)/.test(title);
+function getAdultRemainderStageIndex(stages) {
+  const scored = (stages || []).map((stage, index) => {
+    const title = String(stage?.title || "").toLowerCase();
+    let score = 0;
+
+    if (/\badult\b/.test(title)) score += 100;
+    if (/reproductive\s*adult|breeding\s*adult|adult\s*stage/.test(title)) score += 40;
+    if (/\bmature\b/.test(title)) score += 25;
+    if (/\breproduct/.test(title)) score += 20;
+    if (/\bbreeding\b/.test(title)) score += 10;
+    if (/\bspawning\b/.test(title)) score += 4;
+    if (/\bburrow\b|\bforaging\b|\broosting\b|\bmigration\b/.test(title)) score -= 8;
+
+    return { index, score };
+  });
+
+  const best = scored.reduce((top, current) => {
+    if (!top || current.score > top.score) return current;
+    return top;
+  }, null);
+
+  return best && best.score > 0 ? best.index : -1;
 }
 
 function calculatePieDurationWeights(stages, lifespanText) {
@@ -699,7 +718,7 @@ function calculatePieDurationWeights(stages, lifespanText) {
   const hasUsableLifespan = Number.isFinite(lifespanDays) && lifespanDays > 0;
 
   if (hasUsableLifespan) {
-    const adultIndex = stages.findIndex(isAdultLikeStage);
+    const adultIndex = getAdultRemainderStageIndex(stages);
     const fallbackRemainderIndex = durationValues.findIndex(v => v === null);
     const remainderIndex = adultIndex >= 0
       ? adultIndex
@@ -1552,12 +1571,150 @@ function renderCircular(data) {
   });
 
   let maxCardBottom = centerY + outerR;
+  const placedRects = [];
+  const circleExclusionR = outerR + 42;
+  const minCardY = safeTopY + 18;
+  const maxCardY = centerY + outerR + maxCardH + 180;
 
-  stages.forEach((stage, i) => {
-    const angle = -Math.PI / 2 + (i * 2 * Math.PI / n);
+  const normalizeAngle = (rad) => {
+    let a = rad;
+    while (a <= -Math.PI) a += Math.PI * 2;
+    while (a > Math.PI) a -= Math.PI * 2;
+    return a;
+  };
+
+  const angularDistance = (a, b) => Math.abs(normalizeAngle(a - b));
+
+  const rectsOverlap = (a, b, pad = 18) => (
+    a.x < b.x + b.w + pad &&
+    a.x + a.w + pad > b.x &&
+    a.y < b.y + b.h + pad &&
+    a.y + a.h + pad > b.y
+  );
+
+  const rectIntersectsCircle = (rect, cx, cy, r) => {
+    const closestX = clamp(cx, rect.x, rect.x + rect.w);
+    const closestY = clamp(cy, rect.y, rect.y + rect.h);
+    const dx = cx - closestX;
+    const dy = cy - closestY;
+    return (dx * dx + dy * dy) < (r * r);
+  };
+
+  const fitsRect = (rect) => (
+    !rectIntersectsCircle(rect, centerX, centerY, circleExclusionR) &&
+    !placedRects.some(existing => rectsOverlap(rect, existing)) &&
+    rect.y >= minCardY &&
+    rect.y + rect.h <= maxCardY
+  );
+
+  const makeRectForPolar = (angle, radius, cardH) => {
+    const rawX = centerX + Math.cos(angle) * radius - cardW / 2;
+    const rawY = centerY + Math.sin(angle) * radius - cardH / 2;
+    return {
+      x: clamp(rawX, 20, width - cardW - 20),
+      y: clamp(rawY, minCardY, maxCardY - cardH),
+      w: cardW,
+      h: cardH
+    };
+  };
+
+  const findStackedRect = (placement) => {
+    const dx = Math.cos(placement.angle);
+    const dy = Math.sin(placement.angle);
+    const shifts = [0, -170, 170, -340, 340, -510, 510];
+
+    if (Math.abs(dx) >= Math.abs(dy)) {
+      const x = dx >= 0 ? width - cardW - 24 : 24;
+      for (const shift of shifts) {
+        const rect = {
+          x,
+          y: clamp(placement.nodeY - placement.cardH / 2 + shift, minCardY, maxCardY - placement.cardH),
+          w: cardW,
+          h: placement.cardH
+        };
+        if (fitsRect(rect)) return rect;
+      }
+    } else {
+      const y = dy < 0 ? minCardY + 10 : centerY + outerR + 90;
+      for (const shift of shifts) {
+        const rect = {
+          x: clamp(placement.nodeX - cardW / 2 + shift, 20, width - cardW - 20),
+          y: clamp(y, minCardY, maxCardY - placement.cardH),
+          w: cardW,
+          h: placement.cardH
+        };
+        if (fitsRect(rect)) return rect;
+      }
+    }
+
+    return {
+      x: clamp(placement.nodeX - cardW / 2, 20, width - cardW - 20),
+      y: clamp(centerY + outerR + 90, minCardY, maxCardY - placement.cardH),
+      w: cardW,
+      h: placement.cardH
+    };
+  };
+
+  const cardinalAngles = [-Math.PI / 2, 0, Math.PI / 2, Math.PI];
+
+  const placements = stages.map((stage, i) => {
+    const slice = pieSlices[i];
+    const angleDeg = slice ? (slice.startDeg + slice.endDeg) / 2 : (-90 + (i * 360 / n));
+    const angle = angleDeg * Math.PI / 180;
     const nodeX = centerX + Math.cos(angle) * nodeOrbitR;
     const nodeY = centerY + Math.sin(angle) * nodeOrbitR;
-    const color = heatColor(i, n);
+    const cardH = estimatedCardHeights[i];
+    const placement = {
+      stage,
+      index: i,
+      angle,
+      angleDeg,
+      nodeX,
+      nodeY,
+      cardH,
+      color: heatColor(i, n)
+    };
+
+    const nearestCardinals = [...cardinalAngles].sort((a, b) => angularDistance(angle, a) - angularDistance(angle, b));
+    const angleCandidates = [
+      angle,
+      angle - 0.35,
+      angle + 0.35,
+      angle - 0.7,
+      angle + 0.7,
+      ...nearestCardinals
+    ].map(normalizeAngle);
+    const radiusCandidates = [cardOrbitR, cardOrbitR + 90, cardOrbitR + 170];
+
+    let chosenRect = null;
+    for (const radius of radiusCandidates) {
+      for (const angleCandidate of angleCandidates) {
+        const rect = makeRectForPolar(angleCandidate, radius, cardH);
+        if (fitsRect(rect)) {
+          chosenRect = rect;
+          placement.cardAngle = angleCandidate;
+          break;
+        }
+      }
+      if (chosenRect) break;
+    }
+
+    if (!chosenRect) {
+      chosenRect = findStackedRect(placement);
+      placement.cardAngle = angle;
+    }
+
+    placement.cardX = chosenRect.x;
+    placement.cardY = chosenRect.y;
+    placement.anchorX = clamp(placement.nodeX, placement.cardX, placement.cardX + cardW);
+    placement.anchorY = clamp(placement.nodeY, placement.cardY, placement.cardY + placement.cardH);
+    placedRects.push(chosenRect);
+    maxCardBottom = Math.max(maxCardBottom, placement.cardY + placement.cardH);
+    return placement;
+  });
+
+  placements.forEach((placement) => {
+    const { stage, index: i, angle, nodeX, nodeY, color, cardH, cardX, cardY, anchorX, anchorY } = placement;
 
     const spoke = document.createElementNS(SVG_NS, "line");
     spoke.setAttribute("x1", centerX + Math.cos(angle) * 120);
@@ -1586,15 +1743,6 @@ function renderCircular(data) {
     nodeLabel.setAttribute("fill", "#ffffff");
     nodeLabel.textContent = `${i + 1}`;
     svg.appendChild(nodeLabel);
-
-    const rawCardX = centerX + Math.cos(angle) * cardOrbitR - cardW / 2;
-    const cardH = estimatedCardHeights[i];
-    const rawCardY = centerY + Math.sin(angle) * cardOrbitR - cardH / 2;
-    const cardX = clamp(rawCardX, 20, width - cardW - 20);
-    const cardY = rawCardY;
-
-    const anchorX = clamp(nodeX, cardX, cardX + cardW);
-    const anchorY = clamp(nodeY, cardY, cardY + cardH);
 
     const connector = document.createElementNS(SVG_NS, "line");
     connector.setAttribute("x1", nodeX);
@@ -1686,8 +1834,6 @@ function renderCircular(data) {
       fontSize: 10,
       lineHeight: 12
     });
-
-    maxCardBottom = Math.max(maxCardBottom, cardY + cardH);
   });
 
   const height = Math.max(centerY + outerR + 120, maxCardBottom + 70);
