@@ -684,6 +684,53 @@ function durationToDays(durationText) {
   return null;
 }
 
+function isAdultLikeStage(stage) {
+  const title = String(stage?.title || "").toLowerCase();
+  return /(adult|mature|breeding|reproduct|spawning)/.test(title);
+}
+
+function calculatePieDurationWeights(stages, lifespanText) {
+  const durationValues = stages.map((stage) => {
+    const days = durationToDays(getStageDurationText(stage));
+    return (Number.isFinite(days) && days > 0) ? days : null;
+  });
+
+  const lifespanDays = durationToDays(lifespanText);
+  const hasUsableLifespan = Number.isFinite(lifespanDays) && lifespanDays > 0;
+
+  if (hasUsableLifespan) {
+    const adultIndex = stages.findIndex(isAdultLikeStage);
+    const fallbackRemainderIndex = durationValues.findIndex(v => v === null);
+    const remainderIndex = adultIndex >= 0
+      ? adultIndex
+      : (fallbackRemainderIndex >= 0 ? fallbackRemainderIndex : durationValues.length - 1);
+
+    const knownNonRemainderTotal = durationValues.reduce((sum, value, i) => {
+      if (i === remainderIndex) return sum;
+      return sum + (value || 0);
+    }, 0);
+
+    const remainder = lifespanDays - knownNonRemainderTotal;
+    if (remainder > 0 && remainderIndex >= 0) {
+      return durationValues.map((value, i) => {
+        if (i === remainderIndex) return remainder;
+        return value || 0;
+      });
+    }
+  }
+
+  const knownDurations = durationValues.filter(v => v !== null).sort((a, b) => a - b);
+  let fallbackDuration = 14;
+  if (knownDurations.length) {
+    const mid = Math.floor(knownDurations.length / 2);
+    fallbackDuration = knownDurations.length % 2
+      ? knownDurations[mid]
+      : (knownDurations[mid - 1] + knownDurations[mid]) / 2;
+  }
+
+  return durationValues.map(v => v ?? fallbackDuration);
+}
+
 // =========================
 function parseDurationForRing(durationText) {
   if (!durationText) return { days: null, bucket: "unknown" };
@@ -1384,21 +1431,8 @@ function renderCircular(data) {
     ].join(" ");
   };
 
-  const durationValues = stages.map((stage) => {
-    const days = durationToDays(getStageDurationText(stage));
-    return (Number.isFinite(days) && days > 0) ? days : null;
-  });
-
-  const knownDurations = durationValues.filter(v => v !== null).sort((a, b) => a - b);
-  let fallbackDuration = 14;
-  if (knownDurations.length) {
-    const mid = Math.floor(knownDurations.length / 2);
-    fallbackDuration = knownDurations.length % 2
-      ? knownDurations[mid]
-      : (knownDurations[mid - 1] + knownDurations[mid]) / 2;
-  }
-
-  const durationWeights = durationValues.map(v => v ?? fallbackDuration);
+  const lifespanText = getSpeciesLifespanText(data) || "Not provided";
+  const durationWeights = calculatePieDurationWeights(stages, lifespanText);
 
   const totalDuration = durationWeights.reduce((sum, v) => sum + v, 0) || 1;
   const gapDeg = n > 2 ? 1.6 : 0.9;
@@ -1492,8 +1526,6 @@ function renderCircular(data) {
   core.setAttribute("stroke", "#cbd5e1");
   core.setAttribute("stroke-width", 1.5);
   svg.appendChild(core);
-
-  const lifespanText = getSpeciesLifespanText(data) || "Not provided";
 
   const coreLabel = document.createElementNS(SVG_NS, "text");
   coreLabel.setAttribute("x", centerX);
