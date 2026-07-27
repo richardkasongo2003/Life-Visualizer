@@ -1,7 +1,52 @@
+function setStageTarget(el, stageIndex, role) {
+  if (!el) return el;
+  el.setAttribute("data-stage-index", stageIndex);
+  el.setAttribute("data-stage-role", role);
+  el.classList.add("stage-target");
+  if (role) el.classList.add(`stage-role-${role}`);
+  return el;
+}
+
+function buildRenderContext(template, data, stages, svg) {
+  return {
+    template,
+    data,
+    stages,
+    svg,
+    stageEntries: stages.map((stage, index) => ({
+      index,
+      stage,
+      color: heatColor(index, stages.length),
+      elements: []
+    }))
+  };
+}
+
+function registerStageElement(context, stageIndex, el, role) {
+  const entry = context?.stageEntries?.[stageIndex];
+  if (!entry || !el) return;
+  setStageTarget(el, stageIndex, role);
+  entry.elements.push(el);
+}
+
+function registerMonthBar(context, stageIndex, el) {
+  registerStageElement(context, stageIndex, el, "month-bar");
+}
+
+function finalizeRenderContext(context) {
+  currentRenderContext = context;
+  if (typeof window.refreshStageInspector === "function") {
+    window.refreshStageInspector();
+  }
+  if (typeof window.applyStageSelection === "function") {
+    window.applyStageSelection(selectedStageIndex, { force: true });
+  }
+}
+
 function renderTimeline(data) {
   const stages = data.stages || [];
   const n = stages.length;
-  if (!n) return;
+  if (!n) return null;
   const bulletLimit = getAdaptiveBulletLimit("timeline", n);
 
   const width = 1200;
@@ -11,10 +56,10 @@ function renderTimeline(data) {
   const titleY = 50;
   const monthBandY = 130;
   let monthBandH = 80;
-  const cardSpacing = 280;
   const cardW = 340;
 
   const svg = createSVG(width, 1200);
+  const context = buildRenderContext("timeline", data, stages, svg);
 
   const title = document.createElementNS(SVG_NS, "text");
   title.setAttribute("x", width / 2);
@@ -36,6 +81,16 @@ function renderTimeline(data) {
     subtitle.textContent = data.speciesName;
     svg.appendChild(subtitle);
   }
+
+  const annualLabel = document.createElementNS(SVG_NS, "text");
+  annualLabel.setAttribute("x", width / 2);
+  annualLabel.setAttribute("y", monthBandY - 18);
+  annualLabel.setAttribute("text-anchor", "middle");
+  annualLabel.setAttribute("font-size", 12);
+  annualLabel.setAttribute("font-weight", "bold");
+  annualLabel.setAttribute("fill", "#64748b");
+  annualLabel.textContent = "Annual stage timing";
+  svg.appendChild(annualLabel);
 
   const monthBandBg = document.createElementNS(SVG_NS, "rect");
   monthBandBg.setAttribute("x", padding);
@@ -60,7 +115,8 @@ function renderTimeline(data) {
         start: monthRange.start,
         end: monthRange.end,
         stageNum: i + 1,
-        title: stage.title || `Stage ${i + 1}`,
+        stageIndex: i,
+        title: getStageHeadingText(stage, i),
         color: heatColor(i, n),
         wraps: monthRange.wraps
       });
@@ -93,6 +149,7 @@ function renderTimeline(data) {
       tooltip.textContent = `Stage ${range.stageNum}: ${range.title}\nMonths: ${monthNames}`;
       barRect.appendChild(tooltip);
       svg.appendChild(barRect);
+      registerMonthBar(context, range.stageIndex, barRect);
 
       const label = document.createElementNS(SVG_NS, "text");
       label.setAttribute("x", x1 + barW / 2);
@@ -103,6 +160,7 @@ function renderTimeline(data) {
       label.setAttribute("fill", "#fff");
       label.textContent = `${range.stageNum}`;
       svg.appendChild(label);
+      registerMonthBar(context, range.stageIndex, label);
     };
 
     if (!range.wraps) {
@@ -155,9 +213,14 @@ function renderTimeline(data) {
   svg.appendChild(timelineLine);
 
   stages.forEach((stage, i) => {
+    const stageTitle = getStageHeadingText(stage, i);
+    const durationText = getStageDurationText(stage);
+    const bullets = getStageSummaryBullets(stage, bulletLimit);
+    const resources = getStageResourceNeeds(stage).slice(0, 2);
+
     const titleHeight = estimateWrappedTextHeight({
       svg,
-      text: stage.title || `Stage ${i + 1}`,
+      text: stageTitle,
       maxWidthPx: cardW - 24,
       fontSize: 13,
       lineHeight: 13,
@@ -165,7 +228,6 @@ function renderTimeline(data) {
       fontWeight: "bold"
     });
 
-    const durationText = getStageDurationText(stage);
     const durationHeight = durationText ? estimateWrappedTextHeight({
       svg,
       text: `Duration: ${durationText}`,
@@ -176,7 +238,6 @@ function renderTimeline(data) {
       fontWeight: "bold"
     }) : 0;
 
-    const bullets = getStageSummaryBullets(stage, bulletLimit);
     const bulletHeight = estimateBulletHeight({
       svg,
       maxWidthPx: cardW - 24,
@@ -185,7 +246,15 @@ function renderTimeline(data) {
       lineHeight: 13
     });
 
-    const cardH = Math.max(220, 40 + 12 + titleHeight + 12 + durationHeight + (durationText ? 6 : 0) + bulletHeight + 20);
+    const resourceLines = resources.length ? estimateBulletHeight({
+      svg,
+      maxWidthPx: cardW - 24,
+      bullets: resources.map(item => `${item.label}: ${item.value}`),
+      fontSize: 10,
+      lineHeight: 13
+    }) : 0;
+
+    const cardH = Math.max(220, 40 + 12 + titleHeight + 12 + durationHeight + (durationText ? 6 : 0) + bulletHeight + resourceLines + 24);
     const cardY = cursorY;
     const color = heatColor(i, n);
 
@@ -197,6 +266,7 @@ function renderTimeline(data) {
     dot.setAttribute("stroke", "#fff");
     dot.setAttribute("stroke-width", 3);
     svg.appendChild(dot);
+    registerStageElement(context, i, dot, "node");
 
     const dotNum = document.createElementNS(SVG_NS, "text");
     dotNum.setAttribute("x", timelineX);
@@ -207,6 +277,7 @@ function renderTimeline(data) {
     dotNum.setAttribute("fill", "#fff");
     dotNum.textContent = i + 1;
     svg.appendChild(dotNum);
+    registerStageElement(context, i, dotNum, "node-label");
 
     const cardX = padding + 80;
 
@@ -220,6 +291,7 @@ function renderTimeline(data) {
     card.setAttribute("stroke", "#ddd");
     card.setAttribute("stroke-width", 1);
     svg.appendChild(card);
+    registerStageElement(context, i, card, "card");
 
     const header = document.createElementNS(SVG_NS, "rect");
     header.setAttribute("x", cardX);
@@ -229,6 +301,7 @@ function renderTimeline(data) {
     header.setAttribute("rx", 8);
     header.setAttribute("fill", color);
     svg.appendChild(header);
+    registerStageElement(context, i, header, "card-head");
 
     const headerClipId = `timeline-card-head-${i}`;
     const bodyClipId = `timeline-card-body-${i}`;
@@ -238,15 +311,17 @@ function renderTimeline(data) {
     const headerTextGroup = document.createElementNS(SVG_NS, "g");
     headerTextGroup.setAttribute("clip-path", headerClip);
     svg.appendChild(headerTextGroup);
+    registerStageElement(context, i, headerTextGroup, "card-head-text");
 
     const bodyTextGroup = document.createElementNS(SVG_NS, "g");
     bodyTextGroup.setAttribute("clip-path", bodyClip);
     svg.appendChild(bodyTextGroup);
+    registerStageElement(context, i, bodyTextGroup, "card-body");
 
     addWrappedTextLines({
       svg,
       parentG: headerTextGroup,
-      text: stage.title || `Stage ${i + 1}`,
+      text: stageTitle,
       x: cardX + 12,
       y: cardY + 20,
       maxWidthPx: cardW - 24,
@@ -283,10 +358,24 @@ function renderTimeline(data) {
       y: bulletStartY - 6,
       maxWidthPx: cardW - 24,
       bullets,
-      maxHeight: Math.max(0, (cardY + cardH) - bulletStartY - 12),
+      maxHeight: Math.max(0, (cardY + cardH) - bulletStartY - 36),
       fontSize: 10,
       lineHeight: 13
     });
+
+    if (resources.length) {
+      addWrappedBullets({
+        svg,
+        parentG: bodyTextGroup,
+        x: cardX + 12,
+        y: cardY + cardH - Math.max(30, resourceLines + 8),
+        maxWidthPx: cardW - 24,
+        bullets: resources.map(item => `${item.label}: ${item.value}`),
+        maxHeight: Math.max(0, resourceLines + 6),
+        fontSize: 9.5,
+        lineHeight: 12
+      });
+    }
 
     cursorY += cardH + 60;
   });
@@ -299,16 +388,18 @@ function renderTimeline(data) {
 
   const scaler = document.getElementById("svgScaler");
   scaler.appendChild(svg);
+  finalizeRenderContext(context);
+  return context;
 }
 
 function renderCircular(data) {
   const circularModel = buildCircularStageModel(data.stages || []);
   const stages = circularModel.stages || [];
   const n = stages.length;
-  if (!n) return;
+  if (!n) return null;
   const bulletLimit = getAdaptiveBulletLimit("circular", n);
 
-  const width = 1300;
+  const width = 1320;
   const padding = 80;
   const usableW = width - 2 * padding;
 
@@ -317,6 +408,7 @@ function renderCircular(data) {
   const monthBandH = 80;
 
   const svg = createSVG(width, 1700);
+  const context = buildRenderContext("circular", data, stages, svg);
 
   const title = document.createElementNS(SVG_NS, "text");
   title.setAttribute("x", width / 2);
@@ -338,6 +430,16 @@ function renderCircular(data) {
     subtitle.textContent = data.speciesName;
     svg.appendChild(subtitle);
   }
+
+  const annualLabel = document.createElementNS(SVG_NS, "text");
+  annualLabel.setAttribute("x", width / 2);
+  annualLabel.setAttribute("y", monthBandY - 18);
+  annualLabel.setAttribute("text-anchor", "middle");
+  annualLabel.setAttribute("font-size", 12);
+  annualLabel.setAttribute("font-weight", "bold");
+  annualLabel.setAttribute("fill", "#64748b");
+  annualLabel.textContent = "Annual timing on top, average lifespan at center";
+  svg.appendChild(annualLabel);
 
   const monthBandBg = document.createElementNS(SVG_NS, "rect");
   monthBandBg.setAttribute("x", padding);
@@ -362,7 +464,8 @@ function renderCircular(data) {
         end: monthRange.end,
         wraps: monthRange.wraps,
         stageNum: i + 1,
-        title: stage.title || `Stage ${i + 1}`,
+        stageIndex: i,
+        title: getStageHeadingText(stage, i),
         color: heatColor(i, n)
       });
     }
@@ -389,6 +492,7 @@ function renderCircular(data) {
       barRect.setAttribute("stroke", "#fff");
       barRect.setAttribute("stroke-width", 1.5);
       svg.appendChild(barRect);
+      registerMonthBar(context, range.stageIndex, barRect);
 
       const label = document.createElementNS(SVG_NS, "text");
       label.setAttribute("x", x1 + barW / 2);
@@ -399,6 +503,7 @@ function renderCircular(data) {
       label.setAttribute("fill", "#ffffff");
       label.textContent = `${range.stageNum}`;
       svg.appendChild(label);
+      registerMonthBar(context, range.stageIndex, label);
     };
 
     if (!range.wraps) {
@@ -437,16 +542,17 @@ function renderCircular(data) {
     svg.appendChild(label);
   }
 
-  const cardW = 290;
-  const baseCardH = 170;
+  const cardW = 280;
+  const baseCardH = 156;
   const centerX = width / 2;
-  const outerR = 260;
+  const outerR = 258;
   const nodeOrbitR = outerR - 6;
-  const cardOrbitR = outerR + Math.min(360, Math.max(260, n * 22));
+  const cardOrbitR = outerR + Math.min(360, Math.max(270, n * 24));
 
-  const estimatedCardHeights = stages.map((stage, i) => {
+  const estimatedCardHeights = stages.map((stage) => {
     const durationText = getStageDurationText(stage);
     const detailBullets = getStageSummaryBullets(stage, bulletLimit);
+    const resources = getStageResourceNeeds(stage).slice(0, 2);
     const durationHeight = durationText ? estimateWrappedTextHeight({
       svg,
       text: `Duration: ${durationText}`,
@@ -463,7 +569,14 @@ function renderCircular(data) {
       fontSize: 10,
       lineHeight: 12
     });
-    return Math.max(baseCardH, 48 + durationHeight + (durationText ? 4 : 0) + bulletHeight + 18);
+    const resourceHeight = resources.length ? estimateBulletHeight({
+      svg,
+      maxWidthPx: cardW - 18,
+      bullets: resources.map(item => `${item.label}: ${item.value}`),
+      fontSize: 9.6,
+      lineHeight: 11.5
+    }) : 0;
+    return Math.max(baseCardH, 48 + durationHeight + (durationText ? 4 : 0) + bulletHeight + resourceHeight + 22);
   });
   const maxCardH = estimatedCardHeights.reduce((max, h) => Math.max(max, h), baseCardH);
 
@@ -548,7 +661,7 @@ function renderCircular(data) {
     cursorDeg += sweepDeg;
   });
 
-  pieSlices.forEach((slice) => {
+  pieSlices.forEach((slice, i) => {
     const wedge = document.createElementNS(SVG_NS, "path");
     wedge.setAttribute("d", donutSlicePath(centerX, centerY, durationPieOuterR, durationPieInnerR, slice.startDeg, slice.endDeg));
     wedge.setAttribute("fill", slice.color);
@@ -562,6 +675,7 @@ function renderCircular(data) {
     wedge.appendChild(tip);
 
     svg.appendChild(wedge);
+    registerStageElement(context, i, wedge, "slice");
 
     if (slice.sweepDeg >= 12) {
       const midDeg = (slice.startDeg + slice.endDeg) / 2;
@@ -575,6 +689,7 @@ function renderCircular(data) {
       pieLabel.setAttribute("fill", "#ffffff");
       pieLabel.textContent = `${slice.stageNum}`;
       svg.appendChild(pieLabel);
+      registerStageElement(context, i, pieLabel, "slice-label");
     }
   });
 
@@ -627,7 +742,7 @@ function renderCircular(data) {
   coreLabel.setAttribute("font-size", 11);
   coreLabel.setAttribute("font-weight", "bold");
   coreLabel.setAttribute("fill", "#0f172a");
-  coreLabel.textContent = "Lifespan";
+  coreLabel.textContent = "Average lifespan";
   svg.appendChild(coreLabel);
 
   addWrappedTextLines({
@@ -798,6 +913,7 @@ function renderCircular(data) {
     spoke.setAttribute("stroke", "#cbd5e1");
     spoke.setAttribute("stroke-width", 1.2);
     svg.appendChild(spoke);
+    registerStageElement(context, i, spoke, "spoke");
 
     const node = document.createElementNS(SVG_NS, "circle");
     node.setAttribute("cx", nodeX);
@@ -807,6 +923,7 @@ function renderCircular(data) {
     node.setAttribute("stroke", "#ffffff");
     node.setAttribute("stroke-width", 3);
     svg.appendChild(node);
+    registerStageElement(context, i, node, "node");
 
     const nodeLabel = document.createElementNS(SVG_NS, "text");
     nodeLabel.setAttribute("x", nodeX);
@@ -817,6 +934,7 @@ function renderCircular(data) {
     nodeLabel.setAttribute("fill", "#ffffff");
     nodeLabel.textContent = `${i + 1}`;
     svg.appendChild(nodeLabel);
+    registerStageElement(context, i, nodeLabel, "node-label");
 
     const connector = document.createElementNS(SVG_NS, "line");
     connector.setAttribute("x1", nodeX);
@@ -827,6 +945,7 @@ function renderCircular(data) {
     connector.setAttribute("stroke-width", 1.6);
     connector.setAttribute("opacity", 0.8);
     svg.appendChild(connector);
+    registerStageElement(context, i, connector, "connector");
 
     const card = document.createElementNS(SVG_NS, "rect");
     card.setAttribute("x", cardX);
@@ -838,6 +957,7 @@ function renderCircular(data) {
     card.setAttribute("stroke", "#cbd5e1");
     card.setAttribute("stroke-width", 1.2);
     svg.appendChild(card);
+    registerStageElement(context, i, card, "card");
 
     const cardHead = document.createElementNS(SVG_NS, "rect");
     cardHead.setAttribute("x", cardX);
@@ -847,6 +967,7 @@ function renderCircular(data) {
     cardHead.setAttribute("rx", 12);
     cardHead.setAttribute("fill", color);
     svg.appendChild(cardHead);
+    registerStageElement(context, i, cardHead, "card-head");
 
     const headerClipId = `circular-card-head-${i}`;
     const bodyClipId = `circular-card-body-${i}`;
@@ -856,19 +977,21 @@ function renderCircular(data) {
     const headerTextGroup = document.createElementNS(SVG_NS, "g");
     headerTextGroup.setAttribute("clip-path", headerClip);
     svg.appendChild(headerTextGroup);
+    registerStageElement(context, i, headerTextGroup, "card-head-text");
 
     const bodyTextGroup = document.createElementNS(SVG_NS, "g");
     bodyTextGroup.setAttribute("clip-path", bodyClip);
     svg.appendChild(bodyTextGroup);
+    registerStageElement(context, i, bodyTextGroup, "card-body");
 
     addWrappedTextLines({
       svg,
       parentG: headerTextGroup,
-      text: stage.title || `Stage ${i + 1}`,
+      text: getStageHeadingText(stage, i),
       x: cardX + 10,
       y: cardY + 18,
       maxWidthPx: cardW - 18,
-      fontSize: 12,
+      fontSize: 11.5,
       lineHeight: 12,
       maxLines: 2,
       fill: "#ffffff",
@@ -904,10 +1027,25 @@ function renderCircular(data) {
       y: infoY - 12,
       maxWidthPx: cardW - 18,
       bullets: detailBullets,
-      maxHeight: Math.max(0, (cardY + cardH) - infoY - 10),
+      maxHeight: Math.max(0, (cardY + cardH) - infoY - 34),
       fontSize: 10,
       lineHeight: 12
     });
+
+    const resources = getStageResourceNeeds(stage).slice(0, 2);
+    if (resources.length) {
+      addWrappedBullets({
+        svg,
+        parentG: bodyTextGroup,
+        x: cardX + 10,
+        y: cardY + cardH - 30,
+        maxWidthPx: cardW - 18,
+        bullets: resources.map(item => `${item.label}: ${item.value}`),
+        maxHeight: 26,
+        fontSize: 9.5,
+        lineHeight: 11
+      });
+    }
   });
 
   const height = Math.max(centerY + outerR + 120, maxCardBottom + 70);
@@ -916,16 +1054,23 @@ function renderCircular(data) {
 
   const scaler = document.getElementById("svgScaler");
   scaler.appendChild(svg);
+  finalizeRenderContext(context);
+  return context;
 }
+
 function getSelectedTemplate() {
   return document.getElementById("templateSelect")?.value || "timeline";
 }
 
 function renderSelectedTemplate(data) {
   clearContainer();
+  currentRenderContext = null;
 
   if (!data || !data.stages || data.stages.length === 0) {
     showStatus("No stages found. Check your data or upload another file.");
+    if (typeof window.refreshStageInspector === "function") {
+      window.refreshStageInspector();
+    }
     return;
   }
 

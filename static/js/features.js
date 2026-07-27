@@ -1,6 +1,27 @@
-// =========================
-// Dataset helpers
-// =========================
+let hoveredStageIndex = null;
+
+function enhanceSpeciesWithAI(sp) {
+  if (!sp) return Promise.resolve(sp);
+  if (sp.aiEnhanced) return Promise.resolve(sp);
+
+  return fetch("/ai_enhance", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      title: sp.title || sp.name || "Life history",
+      stages: sp.stages || []
+    })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) throw new Error(data.error);
+      sp.stages = data.stages || sp.stages;
+      if (data.title) sp.title = data.title;
+      sp.aiEnhanced = true;
+      return sp;
+    });
+}
+
 function normalizeDataset(raw) {
   if (raw.species && Array.isArray(raw.species)) {
     raw.species.forEach(sp => {
@@ -17,6 +38,7 @@ function normalizeDataset(raw) {
         title: raw.title || "Life history",
         imageFile: raw.imageFile || null,
         imageUrl: raw.imageUrl || null,
+        lifespan: raw.lifespan || null,
         stages: raw.stages || [],
         aiEnhanced: false
       }
@@ -49,7 +71,7 @@ function getCurrentSpeciesObj() {
 function speciesToRenderData(sp) {
   if (!sp) return null;
   return {
-    title: sp.title || `${fullDataset.title} – ${sp.name}`,
+    title: sp.title || `${fullDataset.title} - ${sp.name}`,
     stages: sp.stages || [],
     imageFile: sp.imageFile || null,
     imageUrl: sp.imageUrl || null,
@@ -88,40 +110,46 @@ function loadDatasetFromInput(callback) {
 
   callback(null, normalizeDataset({
     title: "Life history",
+    lifespan: "2 years",
     stages: [
       {
         title: "Egg",
         bullets: [
-          "Duration: 7–14 days",
-          "Timing: May–Aug",
-          "Reproductive strategy: asynchronous egg laying with oldest chick near fledging when youngest hatches",
-          "Embryonic development duration: 9–11 days",
-          "Initial clutch size: 1–5 eggs"
+          "Duration: 7-14 days",
+          "Timing: May-Aug",
+          "Reproduction: asynchronous egg laying with oldest chick near fledging when youngest hatches",
+          "Resource needs: Nest substrate: sheltered branch; Thermal cover: dense foliage"
+        ]
+      },
+      {
+        title: "Juvenile",
+        bullets: [
+          "Duration: 3-5 weeks",
+          "Timing: Jun-Aug",
+          "Habitat: Edge vegetation",
+          "Movement: short dispersal flights"
         ]
       },
       {
         title: "Adult",
         bullets: [
-          "Duration: 1–3 years",
           "Timing: Year-round",
-          "Sexually mature stage",
-          "Capable of reproduction",
-          "Seasonality: year-round presence",
-          "Engages in breeding activities"
+          "Lifespan: 2 years",
+          "Habitat: Woodland edge",
+          "Reproduction: multiple breeding attempts",
+          "Resource needs: Food source: insects; Shelter: canopy cover"
         ]
       }
     ]
   }));
 }
 
-// =========================
-// AI enhancement helper
-// =========================
 function renderCurrentSpeciesWithAI(options = { force: false }) {
   if (!fullDataset) return;
 
   const sp = getCurrentSpeciesObj();
   if (!sp) return;
+  if (options.force) sp.aiEnhanced = false;
 
   const aiButton = document.getElementById("aiEnhanceBtn");
 
@@ -130,53 +158,26 @@ function renderCurrentSpeciesWithAI(options = { force: false }) {
     if (aiButton) aiButton.disabled = disabled;
   };
 
-  if (sp.aiEnhanced && !options.force) {
-    renderSelectedTemplate(speciesToRenderData(sp));
-    return;
-  }
-
   disableButtons(true);
   showStatus("Enhancing diagram with AI...");
 
-  fetch("/ai_enhance", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      title: sp.title || fullDataset.title || sp.name,
-      stages: sp.stages || []
-    })
-  })
-    .then(r => r.json())
-    .then(data => {
-      if (data.error) {
-        console.error("AI error:", data.error);
-        showStatus("AI enhancement failed – showing original layout.");
-        renderSelectedTemplate(speciesToRenderData(sp));
-        return;
-      }
-
-      sp.stages = data.stages || sp.stages;
-      if (data.title) sp.title = data.title;
-      sp.aiEnhanced = true;
-
+  enhanceSpeciesWithAI(sp)
+    .then(() => {
       const toRender = speciesToRenderData(sp);
       renderSelectedTemplate(toRender);
 
-      const jsonOut = { title: toRender.title, stages: toRender.stages };
+      const jsonOut = { title: toRender.title, lifespan: toRender.lifespan, stages: toRender.stages };
       const jsonInput = document.getElementById("jsonInput");
       if (jsonInput) jsonInput.value = JSON.stringify(jsonOut, null, 2);
     })
     .catch(err => {
       console.error("AI enhancement failed:", err);
-      showStatus("AI enhancement failed – showing original layout.");
+      showStatus("AI enhancement failed - showing original layout.");
       renderSelectedTemplate(speciesToRenderData(sp));
     })
     .finally(() => disableButtons(false));
 }
 
-// =========================
-// SVG -> PNG
-// =========================
 function svgToPngBase64(svgEl, width = 1700, height = 1150, callback) {
   const serializer = new XMLSerializer();
   let svgStr = serializer.serializeToString(svgEl);
@@ -218,28 +219,235 @@ function svgToPngBase64(svgEl, width = 1700, height = 1150, callback) {
   img.src = url;
 }
 
-// =========================
-// Event listeners
-// =========================
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
+function clearNode(node) {
+  if (!node) return;
+  node.innerHTML = "";
+}
+
+function renderChip(container, html, className = "") {
+  const chip = document.createElement("div");
+  chip.className = `chip ${className}`.trim();
+  chip.innerHTML = html;
+  container.appendChild(chip);
+}
+
+function fillBulletList(container, items) {
+  clearNode(container);
+  if (!items.length) {
+    const li = document.createElement("li");
+    li.textContent = "No additional details provided.";
+    container.appendChild(li);
+    return;
+  }
+
+  items.forEach(item => {
+    const li = document.createElement("li");
+    li.textContent = item;
+    container.appendChild(li);
+  });
+}
+
+function getActiveInspectorStageIndex(preferredIndex = null) {
+  const stages = currentRenderContext?.stages || [];
+  if (!stages.length) return -1;
+
+  if (preferredIndex === null && hoveredStageIndex === null && selectedStageIndex === null) {
+    return -1;
+  }
+
+  const candidate = preferredIndex !== null
+    ? preferredIndex
+    : (hoveredStageIndex !== null ? hoveredStageIndex : selectedStageIndex);
+
+  return clamp(candidate, 0, stages.length - 1);
+}
+
+window.refreshStageInspector = function refreshStageInspector(preferredIndex = null) {
+  const sp = getCurrentSpeciesObj();
+  const renderData = sp ? speciesToRenderData(sp) : currentRenderContext?.data;
+  const stages = currentRenderContext?.stages || renderData?.stages || [];
+
+  setText("inspectorSpeciesTitle", renderData?.title || "Life history");
+  setText(
+    "inspectorSpeciesMeta",
+    stages.length
+      ? `${stages.length} life-history stage${stages.length === 1 ? "" : "s"} shown across one annual cycle.`
+      : "Upload data to inspect annual stage timing and lifespan context."
+  );
+  setText("inspectorLifespan", `Average lifespan: ${getSpeciesLifespanText(renderData) || "not provided"}`);
+
+  const annualContainer = document.getElementById("inspectorAnnualFlow");
+  fillBulletList(
+    annualContainer,
+    getAnnualWindowSummary(stages).map(item => {
+      const parts = [item.title];
+      if (item.timing) parts.push(item.timing);
+      if (item.duration) parts.push(item.duration);
+      return parts.join(" - ");
+    })
+  );
+
+  const resourceContainer = document.getElementById("inspectorResources");
+  clearNode(resourceContainer);
+  const resourceStory = summarizeResourceStory(stages);
+  if (resourceStory.length) {
+    resourceStory.forEach(item => {
+      renderChip(
+        resourceContainer,
+        `<strong>${item.group}</strong>: ${item.message}<br><span>${item.stages.join(", ")}</span>`
+      );
+    });
+  } else {
+    const resourceSummary = getSpeciesResourceSummary(stages);
+    if (!resourceSummary.length) {
+      renderChip(resourceContainer, "No explicit resource needs found in uploaded data.");
+    } else {
+      resourceSummary.forEach(item => {
+        renderChip(
+          resourceContainer,
+          `<strong>${item.label}</strong>: ${item.value}<br><span>${item.stages.join(", ")}</span>`
+        );
+      });
+    }
+  }
+
+  const stageIndex = getActiveInspectorStageIndex(preferredIndex);
+  if (stageIndex < 0 || !stages[stageIndex]) {
+    setText("inspectorStageTitle", "No stage selected");
+    setText("inspectorStageMeta", "Hover or click a slice, month bar, or card to inspect it.");
+    clearNode(document.getElementById("inspectorStageBadges"));
+    fillBulletList(document.getElementById("inspectorStageBullets"), []);
+    return;
+  }
+
+  const stage = stages[stageIndex];
+  const focus = getStageFocusSummary(stage);
+  setText("inspectorStageTitle", getStageHeadingText(stage, stageIndex));
+  setText(
+    "inspectorStageMeta",
+    focus.timing
+      ? `Shown in the annual cycle during ${focus.timing}.`
+      : "This stage does not include explicit month timing."
+  );
+
+  const badgeContainer = document.getElementById("inspectorStageBadges");
+  clearNode(badgeContainer);
+  const activeColor = currentRenderContext?.stageEntries?.[stageIndex]?.color || "#334155";
+  renderChip(badgeContainer, `<strong>Stage ${stageIndex + 1}</strong>`, "is-stage");
+  badgeContainer.lastElementChild.style.background = activeColor;
+  if (focus.duration) renderChip(badgeContainer, `<strong>Duration</strong>: ${focus.duration}`);
+  if (focus.timing) renderChip(badgeContainer, `<strong>Timing</strong>: ${focus.timing}`);
+  if (focus.habitat) renderChip(badgeContainer, `<strong>Habitat</strong>: ${focus.habitat}`);
+  if (focus.resourceFocus) renderChip(badgeContainer, `<strong>Resource focus</strong>: ${focus.resourceFocus}`);
+  focus.resources.forEach(item => renderChip(badgeContainer, `<strong>${item.label}</strong>: ${item.value}`));
+
+  fillBulletList(document.getElementById("inspectorStageBullets"), (stage.bullets || []).map(String));
+};
+
+window.applyStageSelection = function applyStageSelection(stageIndex, options = {}) {
+  const context = currentRenderContext;
+  if (!context || !context.stageEntries?.length) {
+    window.refreshStageInspector();
+    return;
+  }
+
+  if (stageIndex === null || stageIndex === undefined) {
+    context.stageEntries.forEach((entry) => {
+      entry.elements.forEach(el => {
+        el.classList.remove("is-active", "is-dimmed", "is-hidden-focus");
+      });
+    });
+    window.refreshStageInspector(null);
+    return;
+  }
+
+  const activeIndex = clamp(stageIndex ?? selectedStageIndex, 0, context.stageEntries.length - 1);
+  if (options.commit) selectedStageIndex = activeIndex;
+
+  context.stageEntries.forEach((entry, index) => {
+    entry.elements.forEach(el => {
+      const role = el.getAttribute("data-stage-role") || "";
+      const shouldHideForFocus = context.template === "circular" &&
+        index !== activeIndex &&
+        ["card", "card-head", "card-head-text", "card-body", "connector"].includes(role);
+
+      el.classList.toggle("is-active", index === activeIndex);
+      el.classList.toggle("is-dimmed", index !== activeIndex);
+      el.classList.toggle("is-hidden-focus", shouldHideForFocus);
+    });
+  });
+
+  window.refreshStageInspector(activeIndex);
+};
+
+function bindSvgInteractions() {
+  const svgContainer = document.getElementById("svgContainer");
+  if (!svgContainer || svgContainer.dataset.bound === "true") return;
+  svgContainer.dataset.bound = "true";
+
+  svgContainer.addEventListener("mouseover", (event) => {
+    const target = event.target.closest("[data-stage-index]");
+    if (!target) return;
+    hoveredStageIndex = Number(target.getAttribute("data-stage-index"));
+    window.applyStageSelection(hoveredStageIndex);
+  });
+
+  svgContainer.addEventListener("mouseout", (event) => {
+    const toElement = event.relatedTarget;
+    if (toElement && toElement.closest && toElement.closest("[data-stage-index]")) return;
+    hoveredStageIndex = null;
+    window.applyStageSelection(selectedStageIndex);
+  });
+
+  svgContainer.addEventListener("click", (event) => {
+    const target = event.target.closest("[data-stage-index]");
+    if (!target) return;
+    selectedStageIndex = Number(target.getAttribute("data-stage-index"));
+    hoveredStageIndex = null;
+    window.applyStageSelection(selectedStageIndex, { commit: true });
+  });
+}
+
+function renderCurrentSpecies() {
+  const sp = getCurrentSpeciesObj();
+  if (!sp) return;
+  selectedStageIndex = null;
+  hoveredStageIndex = null;
+  showStatus("Preparing diagram...");
+  enhanceSpeciesWithAI(sp)
+    .catch((err) => {
+      console.error("Automatic AI preparation failed:", err);
+    })
+    .finally(() => {
+      renderSelectedTemplate(speciesToRenderData(sp));
+    });
+}
+
 function setupLifeViz() {
+  bindSvgInteractions();
+
   document.getElementById("renderBtn")?.addEventListener("click", () => {
     loadDatasetFromInput((err, dataset) => {
       if (err) return alert("Invalid JSON");
       fullDataset = dataset;
       populateSpeciesSelect(fullDataset);
-      renderCurrentSpeciesWithAI({ force: true });
+      renderCurrentSpecies();
     });
   });
 
   document.getElementById("speciesSelect")?.addEventListener("change", () => {
     if (!fullDataset) return;
-    renderCurrentSpeciesWithAI({ force: false });
+    renderCurrentSpecies();
   });
+
   document.getElementById("templateSelect")?.addEventListener("change", () => {
     if (!fullDataset) return;
-    const sp = getCurrentSpeciesObj();
-    if (!sp) return;
-    renderSelectedTemplate(speciesToRenderData(sp));
+    renderCurrentSpecies();
   });
 
   document.getElementById("downloadPngBtn")?.addEventListener("click", () => {
@@ -250,7 +458,7 @@ function setupLifeViz() {
       if (err) return alert("Failed to convert");
       const a = document.createElement("a");
       a.href = pngDataUrl;
-      a.download = "lifeviz_timeline_clean.png";
+      a.download = "lifeviz_diagram.png";
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -287,14 +495,13 @@ function setupLifeViz() {
           URL.revokeObjectURL(url);
         })
         .catch(e => alert("Error: " + e.message));
-    })
+    });
   });
 
   function applyUploadedDataset(data) {
     fullDataset = normalizeDataset(data);
     populateSpeciesSelect(fullDataset);
-    const sp = getCurrentSpeciesObj();
-    if (sp) renderSelectedTemplate(speciesToRenderData(sp));
+    renderCurrentSpecies();
 
     const jsonInput = document.getElementById("jsonInput");
     if (jsonInput) jsonInput.value = JSON.stringify(data, null, 2);
@@ -352,7 +559,7 @@ function setupLifeViz() {
         if (!raw) return;
         fullDataset = normalizeDataset(raw);
         populateSpeciesSelect(fullDataset);
-        renderCurrentSpeciesWithAI({ force: true });
+        renderCurrentSpecies();
 
         const jsonInput = document.getElementById("jsonInput");
         if (jsonInput) jsonInput.value = JSON.stringify(raw, null, 2);

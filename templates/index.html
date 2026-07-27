@@ -4,14 +4,14 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>LifeViz</title>
-    <link rel="stylesheet" href="/static/css/styles.css" />
+  <link rel="stylesheet" href="/static/css/styles.css" />
 </head>
 <body>
   <div id="app">
     <header>
       <h1>LifeViz</h1>
-      <p class="subtitle">Generate clean life-history stage diagrams from JSON or Excel.</p>
-      <span class="badge">SVG → PNG → PPTX</span>
+      <p class="subtitle">Generate clean, interactive life-history diagrams from JSON or Excel worksheets.</p>
+      <span class="badge">SVG -> PNG -> PPTX</span>
     </header>
 
     <div class="controls">
@@ -76,15 +76,44 @@
       </div>
     </div>
 
-    <div class="canvas-wrap">
-      <div id="svgContainer">
-        <div id="svgScaler">
-          <div class="status">Loading sample…</div>
+    <div class="workspace">
+      <div class="canvas-wrap">
+        <div id="svgContainer">
+          <div id="svgScaler">
+            <div class="status">Loading sample...</div>
+          </div>
         </div>
       </div>
+
+      <aside class="inspector" id="inspectorPanel">
+        <div class="inspector-card">
+          <div class="eyebrow">Species overview</div>
+          <h2 id="inspectorSpeciesTitle">Life history</h2>
+          <p id="inspectorSpeciesMeta" class="inspector-muted">Upload data to inspect annual stage timing and lifespan context.</p>
+          <div id="inspectorLifespan" class="summary-pill">Average lifespan: not provided</div>
+        </div>
+
+        <div class="inspector-card">
+          <div class="eyebrow">Stage details</div>
+          <h3 id="inspectorStageTitle">No stage selected</h3>
+          <p id="inspectorStageMeta" class="inspector-muted">Hover or click a slice, month bar, or card to inspect it.</p>
+          <div id="inspectorStageBadges" class="chip-grid"></div>
+          <ul id="inspectorStageBullets" class="detail-list"></ul>
+        </div>
+
+        <div class="inspector-card">
+          <div class="eyebrow">Resource needs</div>
+          <div id="inspectorResources" class="chip-grid"></div>
+        </div>
+
+        <div class="inspector-card">
+          <div class="eyebrow">Annual view</div>
+          <ul id="inspectorAnnualFlow" class="detail-list compact"></ul>
+        </div>
+      </aside>
     </div>
 
-    <footer>LifeViz • Local rendering + optional AI cleanup</footer>
+    <footer>LifeViz - Local rendering with optional AI cleanup</footer>
   </div>
 
   <script src="/static/js/state.js"></script>
@@ -94,4 +123,3 @@
   <script src="/static/js/app.js"></script>
 </body>
 </html>
-

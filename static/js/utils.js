@@ -289,7 +289,8 @@ function estimateBulletHeight({
   maxWidthPx,
   bullets,
   fontSize = 11.2,
-  lineHeight = 14
+  lineHeight = 14,
+  maxWordsPerLine = 6
 }) {
   const measurer = document.createElementNS(SVG_NS, "text");
   measurer.setAttribute("x", -9999);
@@ -306,9 +307,12 @@ function estimateBulletHeight({
   let linesCount = 0;
 
   for (const b of (bullets || [])) {
-    const raw = "• " + safeText(b);
-    const lines = splitToLinesByWidth(raw, measureFn, maxWidthPx);
-    linesCount += lines.length;
+    const logicalLines = splitWordsIntoChunks(safeText(b), maxWordsPerLine);
+    logicalLines.forEach((chunk, idx) => {
+      const raw = `${idx === 0 ? "- " : ""}${chunk}`;
+      const lines = splitToLinesByWidth(raw, measureFn, maxWidthPx);
+      linesCount += lines.length;
+    });
   }
 
   svg.removeChild(measurer);
@@ -425,6 +429,116 @@ function extractKeyFacts(stage) {
   if (threats) chips.push({ icon: "⚠️", label: "Threats", value: threats });
 
   return chips.slice(0, 4);
+}
+
+function getStageResourceNeeds(stage) {
+  const raw = getBulletValue(stage, ["resource needs:"]);
+  if (!raw) return [];
+
+  return raw
+    .split(";")
+    .map(item => item.trim())
+    .filter(Boolean)
+    .map(item => {
+      const parts = item.split(":");
+      if (parts.length < 2) {
+        return { label: "Need", value: item };
+      }
+      return {
+        label: parts.shift().trim(),
+        value: parts.join(":").trim()
+      };
+    })
+    .filter(item => item.value);
+}
+
+function getSpeciesResourceSummary(stages) {
+  const resourceMap = new Map();
+
+  (stages || []).forEach(stage => {
+    getStageResourceNeeds(stage).forEach(item => {
+      const key = `${item.label}::${item.value}`.toLowerCase();
+      if (!resourceMap.has(key)) {
+        resourceMap.set(key, {
+          label: item.label,
+          value: item.value,
+          stages: []
+        });
+      }
+
+      const entry = resourceMap.get(key);
+      const stageTitle = stage.title || "Stage";
+      if (!entry.stages.includes(stageTitle)) entry.stages.push(stageTitle);
+    });
+  });
+
+  return [...resourceMap.values()];
+}
+
+function summarizeResourceStory(stages) {
+  const buckets = new Map();
+
+  (stages || []).forEach((stage, index) => {
+    const group = inferLifeStageGroup(stage.title);
+    const resources = getStageResourceNeeds(stage);
+    if (!resources.length) return;
+
+    if (!buckets.has(group)) {
+      buckets.set(group, { group, labels: new Set(), stages: [] });
+    }
+
+    const bucket = buckets.get(group);
+    resources.forEach(item => bucket.labels.add(item.label));
+    bucket.stages.push(getStageHeadingText(stage, index));
+  });
+
+  return [...buckets.values()].map(bucket => ({
+    group: bucket.group,
+    message: `${bucket.group} depends mainly on ${[...bucket.labels].slice(0, 3).join(", ").toLowerCase()}.`,
+    stages: bucket.stages
+  }));
+}
+
+function getStageHeadingText(stage, index) {
+  return stage?.title || `Stage ${index + 1}`;
+}
+
+function getStageDetailBullets(stage, stageCount, template = "circular") {
+  const bulletLimit = Math.min(CARD_SUMMARY_BULLETS, getAdaptiveBulletLimit(template, stageCount));
+  return getStageSummaryBullets(stage, Math.max(1, bulletLimit));
+}
+
+function getStageFocusSummary(stage) {
+  const duration = getStageDurationText(stage);
+  const timing = getStageRangeText(stage);
+  const resources = getStageResourceNeeds(stage);
+  const habitat = getBulletValue(stage, ["habitat:"]);
+  const reproduction = getBulletValue(stage, ["reproduction:"]);
+  const resourceFocus = getBulletValue(stage, ["resource focus:"]);
+
+  return {
+    duration,
+    timing,
+    habitat,
+    reproduction,
+    resources,
+    resourceFocus
+  };
+}
+
+function getAnnualWindowSummary(stages) {
+  const mapped = (stages || []).map((stage, index) => {
+    const timing = getStageRangeText(stage);
+    const duration = getStageDurationText(stage);
+    return {
+      index,
+      title: stage.title || `Stage ${index + 1}`,
+      timing,
+      duration
+    };
+  });
+
+  return mapped.filter(item => item.timing || item.duration);
 }
 
 function getStageSummaryBullets(stage, maxItems = 2) {
@@ -651,37 +765,36 @@ function getAdultRemainderStageIndex(stages) {
 }
 
 function calculatePieDurationWeights(stages, lifespanText) {
-  const durationValues = stages.map((stage) => {
-    const days = durationToDays(getStageDurationText(stage));
-    return (Number.isFinite(days) && days > 0) ? days : null;
-  });
+  const YEAR_DAYS = 365;
+  const MIN_VISIBLE_SHARE = 0.055;
+  const READABILITY_EXPONENT = 0.58;
 
-  const lifespanDays = durationToDays(lifespanText);
-  const hasUsableLifespan = Number.isFinite(lifespanDays) && lifespanDays > 0;
+  function getMonthSpanDays(stage) {
+    const rangeText = getStageRangeText(stage);
+    const monthRange = parseMonthRange(rangeText);
+    if (!monthRange || monthRange.start === null || monthRange.end === null) return null;
 
-  if (hasUsableLifespan) {
-    const adultIndex = getAdultRemainderStageIndex(stages);
-    const fallbackRemainderIndex = durationValues.findIndex(v => v === null);
-    const remainderIndex = adultIndex >= 0
-      ? adultIndex
-      : (fallbackRemainderIndex >= 0 ? fallbackRemainderIndex : durationValues.length - 1);
+    const monthCount = monthRange.wraps
+      ? (12 - monthRange.start) + (monthRange.end + 1)
+      : (monthRange.end - monthRange.start + 1);
 
-    const knownNonRemainderTotal = durationValues.reduce((sum, value, i) => {
-      if (i === remainderIndex) return sum;
-      return sum + (value || 0);
-    }, 0);
-
-    const remainder = lifespanDays - knownNonRemainderTotal;
-    if (remainder > 0 && remainderIndex >= 0) {
-      return durationValues.map((value, i) => {
-        if (i === remainderIndex) return remainder;
-        return value || 0;
-      });
-    }
+    return Math.max(1, monthCount) * (YEAR_DAYS / 12);
   }
 
-  const knownDurations = durationValues.filter(v => v !== null).sort((a, b) => a - b);
-  let fallbackDuration = 14;
+  function getAnnualPresenceDays(stage) {
+    const durationDays = durationToDays(getStageDurationText(stage));
+    const monthSpanDays = getMonthSpanDays(stage);
+
+    if (durationDays && monthSpanDays) return Math.min(durationDays, monthSpanDays);
+    if (durationDays) return Math.min(durationDays, YEAR_DAYS);
+    if (monthSpanDays) return Math.min(monthSpanDays, YEAR_DAYS);
+    return null;
+  }
+
+  const rawAnnualDays = stages.map(getAnnualPresenceDays);
+  const knownDurations = rawAnnualDays.filter(v => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
+
+  let fallbackDuration = 21;
   if (knownDurations.length) {
     const mid = Math.floor(knownDurations.length / 2);
     fallbackDuration = knownDurations.length % 2
@@ -689,7 +802,18 @@ function calculatePieDurationWeights(stages, lifespanText) {
       : (knownDurations[mid - 1] + knownDurations[mid]) / 2;
   }
 
-  return durationValues.map(v => v ?? fallbackDuration);
+  const baseDays = rawAnnualDays.map(v => (Number.isFinite(v) && v > 0) ? v : fallbackDuration);
+  const normalizedShares = baseDays.map(days => clamp(days / YEAR_DAYS, 0.005, 1));
+  const readableWeights = normalizedShares.map(share => Math.pow(share, READABILITY_EXPONENT));
+
+  let finalWeights = [...readableWeights];
+  const totalWeight = finalWeights.reduce((sum, v) => sum + v, 0) || 1;
+  const minWeight = totalWeight * MIN_VISIBLE_SHARE;
+
+  finalWeights = finalWeights.map(weight => Math.max(weight, minWeight));
+
+  const adjustedTotal = finalWeights.reduce((sum, v) => sum + v, 0) || 1;
+  return finalWeights.map(weight => weight / adjustedTotal);
 }
 
 // =========================

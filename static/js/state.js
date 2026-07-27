@@ -4,12 +4,15 @@
 let fullDataset = null;   // { title, species: [...] }
 let aiBusy = false;
 let currentZoom = 1.0;    // 1 = 100%
+let selectedStageIndex = null;
+let currentRenderContext = null;
 
 // =========================
 // Display rules
 // =========================
 const MAX_BULLETS = 10;
 const BULLET_CHAR_LIMIT = 100000;
+const CARD_SUMMARY_BULLETS = 2;
 
 const BULLET_PRIORITY_PREFIX = [
   "Duration:",

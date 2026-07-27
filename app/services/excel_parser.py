@@ -141,6 +141,41 @@ def select_lifespan_text(lifespan_rows):
     return f"{value}{lifespan_unit_suffix(metric, value)}".strip()
 
 
+def infer_stage_rank(stage_title: str) -> tuple[int, int]:
+    title = clean_cell(stage_title).lower()
+    if not title:
+        return (999, 0)
+
+    rank = 500
+    if any(key in title for key in ["egg", "embryo", "fertiliz"]):
+        rank = 10
+    elif any(key in title for key in ["nest", "incubat", "brood", "hatchling"]):
+        rank = 20
+    elif any(key in title for key in ["larva", "larvae", "tadpole", "fry", "alevin"]):
+        rank = 30
+    elif any(key in title for key in ["chick", "nestling", "fledgling"]):
+        rank = 40
+    elif any(key in title for key in ["juvenile", "young", "immature", "subadult", "yearling", "parr", "smolt"]):
+        rank = 50
+    elif any(key in title for key in ["reproductive adult", "breeding adult"]):
+        rank = 80
+    elif any(key in title for key in ["breeding", "reproduct", "spawn", "spawning"]):
+        rank = 90
+    elif any(key in title for key in ["adult", "mature"]):
+        rank = 70
+
+    reproductive_penalty = 1 if any(key in title for key in ["reproduct", "breeding", "spawn"]) else 0
+    return (rank, reproductive_penalty)
+
+
+def sort_stages_biologically(stages):
+    enriched = []
+    for idx, stage in enumerate(stages or []):
+        enriched.append((infer_stage_rank(stage.get("title", "")), idx, stage))
+    enriched.sort(key=lambda item: (item[0][0], item[0][1], item[1]))
+    return [stage for _, _, stage in enriched]
+
+
 def structured_life_history_workbook_to_species_list(raw_sheets):
     stage_sheet_name = next(
         (name for name in raw_sheets if sheet_name_matches(name, "life history stages", "lifestages")),
@@ -324,6 +359,8 @@ def structured_life_history_workbook_to_species_list(raw_sheets):
                 "bullets": list(dict.fromkeys([b for b in bullets if b])),
             })
 
+        stages_out = sort_stages_biologically(stages_out)
+
         species_out.append({
             "name": info["name"],
             "title": title,
@@ -438,6 +475,8 @@ def generic_workbook_to_species_list(sheets):
                 "title": "Species summary",
                 "bullets": list(dict.fromkeys(info["speciesBullets"])),
             })
+        else:
+            stages = sort_stages_biologically(stages)
 
         species_list.append({
             "name": info["name"],
@@ -549,7 +588,7 @@ def simple_template_sheet_to_species_list(df):
             "title": f"{sp['name']} - Life history",
             "imageFile": sp["imageFile"],
             "imageUrl": sp["imageUrl"],
-            "stages": [{"title": st["name"], "bullets": st["bullets"]} for st in stages],
+            "stages": sort_stages_biologically([{"title": st["name"], "bullets": st["bullets"]} for st in stages]),
         })
 
     return species_out
