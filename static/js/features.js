@@ -1,8 +1,92 @@
 let hoveredStageIndex = null;
 
+function normalizeStageTitleKey(title) {
+  return String(title || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function canonicalStageKey(title) {
+  const key = normalizeStageTitleKey(title);
+  if (!key) return "";
+  if (/(^| )egg( |$)|embryo|fertiliz/.test(key)) return "egg";
+  if (/nest|brood|incubat/.test(key)) return "nest";
+  if (/larva|larvae|tadpole|fry|alevin/.test(key)) return "larva";
+  if (/chick|nestling|fledgling/.test(key)) return "chick";
+  if (/juvenile|juveniles|young|immature|subadult|yearling|smolt|parr/.test(key)) return "juvenile";
+  if (/reproductive adult|breeding adult/.test(key)) return "reproductive adult";
+  if (/adult|mature/.test(key)) return "adult";
+  if (/spawn|burrow/.test(key)) return "spawning";
+  return key.replace(/\b(stage|period)\b/g, "").replace(/\s+/g, " ").trim();
+}
+
+function mergePreservedStageBullets(originalStages, enhancedStages) {
+  const originalByTitle = new Map();
+  const originalByCanonical = new Map();
+
+  (originalStages || []).forEach(stage => {
+    const key = normalizeStageTitleKey(stage?.title);
+    if (key && !originalByTitle.has(key)) {
+      originalByTitle.set(key, stage);
+    }
+
+    const canonicalKey = canonicalStageKey(stage?.title);
+    if (canonicalKey && !originalByCanonical.has(canonicalKey)) {
+      originalByCanonical.set(canonicalKey, stage);
+    }
+  });
+
+  return (enhancedStages || []).map(stage => {
+    const key = normalizeStageTitleKey(stage?.title);
+    const canonicalKey = canonicalStageKey(stage?.title);
+    const original = originalByTitle.get(key) || originalByCanonical.get(canonicalKey);
+    if (!original) return stage;
+
+    const mergedBullets = Array.isArray(stage?.bullets) ? [...stage.bullets] : [];
+    const originalBullets = Array.isArray(original?.bullets) ? original.bullets.map(String) : [];
+
+    const preservedPrefixes = [
+      "timing:",
+      "seasonal timing:",
+      "date range:",
+      "range:",
+      "duration:",
+      "incubation duration:",
+      "period:",
+      "time in stage:",
+      "lifespan:"
+    ];
+
+    preservedPrefixes.forEach(prefix => {
+      const hasCurrent = mergedBullets.some(b => String(b).toLowerCase().startsWith(prefix));
+      if (hasCurrent) return;
+
+      const originalMatch = originalBullets.find(b => b.toLowerCase().startsWith(prefix));
+      if (originalMatch) mergedBullets.unshift(originalMatch);
+    });
+
+    return {
+      ...stage,
+      timingRange: stage?.timingRange || original?.timingRange || "",
+      timingMonths: Array.isArray(stage?.timingMonths) && stage.timingMonths.length
+        ? [...stage.timingMonths]
+        : (Array.isArray(original?.timingMonths) ? [...original.timingMonths] : []),
+      bullets: [...new Set(mergedBullets)]
+    };
+  });
+}
+
 function enhanceSpeciesWithAI(sp) {
   if (!sp) return Promise.resolve(sp);
   if (sp.aiEnhanced) return Promise.resolve(sp);
+
+  const originalStages = Array.isArray(sp.stages)
+    ? sp.stages.map(stage => ({
+        ...stage,
+        bullets: Array.isArray(stage.bullets) ? [...stage.bullets] : []
+      }))
+    : [];
 
   return fetch("/ai_enhance", {
     method: "POST",
@@ -15,7 +99,8 @@ function enhanceSpeciesWithAI(sp) {
     .then(r => r.json())
     .then(data => {
       if (data.error) throw new Error(data.error);
-      sp.stages = data.stages || sp.stages;
+      const enhancedStages = Array.isArray(data.stages) ? data.stages : sp.stages;
+      sp.stages = mergePreservedStageBullets(originalStages, enhancedStages);
       if (data.title) sp.title = data.title;
       sp.aiEnhanced = true;
       return sp;

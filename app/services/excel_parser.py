@@ -216,6 +216,7 @@ def structured_life_history_workbook_to_species_list(raw_sheets):
             "duration_values": [],
             "duration_units": [],
             "timing_months": [],
+            "timing_range": "",
             "bullets": [],
         })
 
@@ -347,8 +348,10 @@ def structured_life_history_workbook_to_species_list(raw_sheets):
                 bullets.append(f"Duration: {duration_text}")
 
             months = [m for m in st["timing_months"] if m]
+            timing_range = range_text_from_values(months)
+            st["timing_range"] = timing_range
             if months:
-                bullets.append(f"Timing: {range_text_from_values(months)}")
+                bullets.append(f"Timing: {timing_range}")
 
             if lifespan_text:
                 bullets.append(f"Lifespan: {lifespan_text}")
@@ -356,6 +359,8 @@ def structured_life_history_workbook_to_species_list(raw_sheets):
             bullets.extend(st["bullets"])
             stages_out.append({
                 "title": st["name"],
+                "timingRange": timing_range,
+                "timingMonths": list(dict.fromkeys(months)),
                 "bullets": list(dict.fromkeys([b for b in bullets if b])),
             })
 

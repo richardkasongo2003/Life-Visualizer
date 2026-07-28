@@ -358,7 +358,24 @@ function getBulletValue(stage, prefixesLower) {
   return String(found).split(":").slice(1).join(":").trim();
 }
 
+function buildTimingRangeFromMonths(months) {
+  const cleaned = Array.isArray(months)
+    ? months.map(m => safeText(m).trim()).filter(Boolean)
+    : [];
+
+  if (!cleaned.length) return "";
+
+  const unique = [...new Set(cleaned)];
+  if (unique.length === 1) return unique[0];
+  return `${unique[0]}-${unique[unique.length - 1]}`;
+}
+
 function getStageRangeText(stage) {
+  if (stage?.timingRange) return safeText(stage.timingRange).trim();
+
+  const timingFromMonths = buildTimingRangeFromMonths(stage?.timingMonths);
+  if (timingFromMonths) return timingFromMonths;
+
   const bullets = Array.isArray(stage.bullets) ? stage.bullets.map(b => String(b)) : [];
 
   // First: strict prefixes
