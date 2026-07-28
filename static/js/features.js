@@ -636,19 +636,4 @@ function setupLifeViz() {
     if (zl) zl.textContent = `${value}%`;
     applyZoom();
   });
-
-  window.addEventListener("DOMContentLoaded", () => {
-    fetch("/static/data/sample.json")
-      .then(res => (res.ok ? res.json() : null))
-      .then(raw => {
-        if (!raw) return;
-        fullDataset = normalizeDataset(raw);
-        populateSpeciesSelect(fullDataset);
-        renderCurrentSpecies();
-
-        const jsonInput = document.getElementById("jsonInput");
-        if (jsonInput) jsonInput.value = JSON.stringify(raw, null, 2);
-      })
-      .catch(() => {});
-  });
 }

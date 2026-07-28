@@ -5,7 +5,6 @@ from app.services.excel_parser import (
     generic_workbook_to_species_list,
     merge_sheet_maps,
     read_excel_sheets_from_bytes,
-    simple_template_sheet_to_species_list,
     structured_life_history_workbook_to_species_list,
 )
 
@@ -65,9 +64,6 @@ def upload_excel_single():
         return jsonify({"error": f"Could not read Excel file: {e}"}), 400
 
     species_list = structured_life_history_workbook_to_species_list(raw_sheets)
-    if not species_list:
-        first_sheet = next(iter(standard_sheets.values()), None)
-        species_list = simple_template_sheet_to_species_list(first_sheet)
     if not species_list:
         species_list = generic_workbook_to_species_list(standard_sheets)
 
